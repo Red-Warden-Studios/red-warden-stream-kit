@@ -8,6 +8,7 @@
 #include <QtGlobal>
 
 #include <deque>
+#include <limits>
 #include <optional>
 #include <vector>
 
@@ -155,11 +156,37 @@ private:
 	std::deque<Sample> samples_;
 };
 
+// The two numbers shown under the Mic test row (dBFS). Loudest = the highest peak heard; Typical = the power mean of
+// the magnitude (the volmeter's RMS) over the samples above kMicDigitalSilenceDb, the same floor the NoAudio rule
+// uses. -inf means "nothing above it" (silent). valid = false: no samples, nothing to show.
+struct MicNumbers {
+	bool valid = false;
+	float loudestDb = -std::numeric_limits<float>::infinity();
+	float typicalDb = -std::numeric_limits<float>::infinity();
+	bool operator==(const MicNumbers &o) const
+	{
+		return valid == o.valid && loudestDb == o.loudestDb && typicalDb == o.typicalDb;
+	}
+	bool operator!=(const MicNumbers &o) const { return !(*this == o); }
+};
+
+// Pure. 10*log10 of the mean POWER (10^(dB/10)) of the values strictly above floorDb; -inf when there is none
+// (empty input, all at or below the floor, NaN skipped). A mean of dB values would be wrong: a loud second and
+// four quiet ones average to something no meter ever showed.
+float powerMeanDb(const std::vector<float> &levelsDb, float floorDb);
+// Pure. One decimal, half away from zero, never "-0.0"; "-inf" for -inf and for anything at or below the
+// collector's -200 dB clamp (a digital-silence reading is not a number worth printing).
+QString formatDb(float db);
+
 // Decides the 5-second mic test from peak-level samples. "Muted" is decided by the caller.
 class MicTestAnalyzer {
 public:
 	void start(qint64 tMs);
 	void add(qint64 tMs, float peakDb);
+	// With the magnitude of the same callback (what Typical is made of). add(t, peak) alone contributes no magnitude.
+	void add(qint64 tMs, float peakDb, float magnitudeDb);
+	// Loudest = max peak, Typical = power mean of the magnitudes above kMicDigitalSilenceDb. Not valid without samples.
+	MicNumbers numbers() const;
 	// sourceActive: whether the mic source was active (producing audio) during the test.
 	// Floor = 10th percentile (nearest-rank) of every peak in the window; PASS iff max > kMicMinPeakDb
 	// and max >= floor + kMicAboveFloorDb.
@@ -179,6 +206,7 @@ public:
 private:
 	qint64 start_ = 0;
 	std::vector<float> peaks_; // every in-window peak, in arrival order
+	std::vector<float> mags_;  // every in-window magnitude (add() with a magnitude only), in arrival order
 	bool haveOld_ = false;
 	float oldFloorDb_ = 0.0f;
 };

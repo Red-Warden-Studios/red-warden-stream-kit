@@ -5,6 +5,9 @@ SPDX-License-Identifier: GPL-2.0-or-later
 */
 
 #include "config.hpp"
+#include "kit-paths.hpp"
+
+#include <string>
 
 #include <obs-module.h>
 #include <obs-frontend-api.h>
@@ -163,9 +166,10 @@ bool saveConfig(const MultistreamConfig &cfg)
 GlobalSettings loadGlobalSettings()
 {
 	GlobalSettings g;
-	char *path = obs_module_config_path("settings.json");
-	if (!path)
+	const std::string pathStr = kitpaths::toolFile(kitpaths::kMultistream, "settings.json");
+	if (pathStr.empty())
 		return g;
+	const char *path = pathStr.c_str();
 	if (obs_data_t *root = obs_data_create_from_json_file_safe(path, "bak")) {
 		g.uploadMbps = obs_data_get_double(root, "upload_mbps");
 		g.uploadSource = str(root, "upload_source");
@@ -174,19 +178,18 @@ GlobalSettings loadGlobalSettings()
 			g.checkUpdates = obs_data_get_bool(root, "check_updates");
 		obs_data_release(root);
 	}
-	bfree(path);
 	return g;
 }
 
 void saveGlobalSettings(const GlobalSettings &g)
 {
-	if (char *dir = obs_module_config_path("")) {
-		os_mkdirs(dir);
-		bfree(dir);
-	}
-	char *path = obs_module_config_path("settings.json");
-	if (!path)
+	const std::string dirStr = kitpaths::toolDir(kitpaths::kMultistream);
+	if (!dirStr.empty())
+		os_mkdirs(dirStr.c_str());
+	const std::string pathStr = kitpaths::toolFile(kitpaths::kMultistream, "settings.json");
+	if (pathStr.empty())
 		return;
+	const char *path = pathStr.c_str();
 	obs_data_t *root = obs_data_create();
 	obs_data_set_double(root, "upload_mbps", g.uploadMbps);
 	obs_data_set_string(root, "upload_source", g.uploadSource.toUtf8().constData());
@@ -194,5 +197,4 @@ void saveGlobalSettings(const GlobalSettings &g)
 	obs_data_set_bool(root, "check_updates", g.checkUpdates);
 	obs_data_save_json_safe(root, path, "tmp", "bak");
 	obs_data_release(root);
-	bfree(path);
 }

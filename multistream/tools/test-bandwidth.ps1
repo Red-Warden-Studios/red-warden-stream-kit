@@ -9,37 +9,36 @@
     - the verdict says the connection is steady
     - OBS's own stream was never started
 
-  Run from red-warden-multistream:  powershell -ExecutionPolicy Bypass -File tools\test-bandwidth.ps1
+  Run from the Multistream folder:  powershell -ExecutionPolicy Bypass -File tools\test-bandwidth.ps1
 #>
 param([string]$Config = "RelWithDebInfo", [int]$Seconds = 34, [switch]$Snapshots)
 $root   = Split-Path -Parent $PSScriptRoot
-$bed    = Join-Path $root ".testbed"
-$obs    = Join-Path $bed "obs"
+$kitTools = Join-Path (Split-Path -Parent $root) "plugin\tools"                                          # published layout: <repo>\plugin
+if (!(Test-Path $kitTools)) { $kitTools = Join-Path (Split-Path -Parent $root) "red-warden-stream-kit\plugin\tools" }   # development layout
+. (Join-Path $kitTools "kit-testbed.ps1")
+$kit    = Get-KitTestbed $Config
+$bed    = $kit.Bed
+$obs    = $kit.Obs
 $cfg    = Join-Path $obs "config\obs-studio"
 $prof   = Join-Path $cfg "basic\profiles\MultistreamTest"
-$dll    = Join-Path $root "build_x64\$Config\rws-multistream.dll"
+$dll    = $kit.Dll
 $ports  = 19350, 19351, 19352          # 19353 deliberately has no receiver
 $ids    = "00000000-beac-0000-0000-000000000001", "00000000-beac-0000-0000-000000000002",
           "00000000-beac-0000-0000-000000000003", "00000000-beac-0000-0000-000000000004"
 
 if (!(Test-Path $dll)) { throw "Build first: $dll not found" }
 
-# 1. portable OBS
-if (!(Test-Path (Join-Path $obs "bin\64bit\obs64.exe"))) {
-  Write-Host "Copying OBS into the testbed (one time)..."
-  robocopy "C:\Program Files\obs-studio" $obs /E /NFL /NDL /NJH /NJS /NP | Out-Null
-  New-Item -ItemType File -Force (Join-Path $obs "portable_mode.txt") | Out-Null
-}
+# 1. portable OBS (first run: copied from the Multistream testbed copy, else from C:\Program Files read-only)
+Initialize-KitPortableObs $obs
+# The previous harness's OBS may still be shutting down: wait for it, never kill it.
+if (!(Wait-KitObsExit (Join-Path $obs "bin\64bit\obs64.exe") 30)) { throw "a testbed obs64.exe ($obs) is still running; not touching it" }
 
-# 2. install plugin
-$pbin = Join-Path $obs "obs-plugins\64bit"
-$pdat = Join-Path $obs "data\obs-plugins\rws-multistream\locale"
-New-Item -ItemType Directory -Force $pdat | Out-Null
-Copy-Item $dll $pbin -Force
-Copy-Item (Join-Path $root "data\locale\en-US.ini") $pdat -Force
+# 2. install exactly ONE plugin DLL: rws-stream-kit.dll (+pdb) and its locale. The old standalone
+#    rws-multistream / rws-preflight / rws-inflight dlls and data folders are removed from the copy first.
+Install-KitPlugin $kit | ForEach-Object { Write-Host $_ }
 
 # fresh throwaway config every run
-if (Test-Path $cfg) { Remove-Item -Recurse -Force $cfg }
+Clear-KitConfig $cfg
 New-Item -ItemType Directory -Force $prof | Out-Null
 New-Item -ItemType Directory -Force (Join-Path $cfg "basic\scenes") | Out-Null
 
@@ -140,14 +139,10 @@ Start-Sleep -Seconds 2
 $snap = Join-Path $bed "snapshots"
 if ($Snapshots) { if (Test-Path $snap) { Remove-Item -Recurse -Force $snap }; $env:RWS_MULTISTREAM_SNAPSHOT = $snap }
 $env:RWS_MULTISTREAM_TEST_BWTEST = "Twitch test"
-$exeDir = Join-Path $obs "bin\64bit"
-$proc = Start-Process (Join-Path $exeDir "obs64.exe") -WorkingDirectory $exeDir -PassThru -ArgumentList @(
-  "--portable", "--multi", "--profile", "MultistreamTest", "--collection", "MultistreamTest",
-  "--disable-updater", "--disable-missing-files-check")
+$proc = Start-KitObs $obs "MultistreamTest" "MultistreamTest"   # hidden, no focus steal
 [void]$proc.Handle
 Start-Sleep -Seconds $Seconds
-[void]$proc.CloseMainWindow()
-if (!$proc.WaitForExit(20000)) { Write-Warning "OBS did not exit cleanly; killing"; $proc.Kill() }
+[void](Close-KitObs $proc)   # hidden OBS: WM_CLOSE to its window (CloseMainWindow needs a visible one)
 Remove-Item Env:RWS_MULTISTREAM_TEST_BWTEST, Env:RWS_MULTISTREAM_SNAPSHOT -ErrorAction SilentlyContinue
 Start-Sleep -Seconds 1
 if (!$sink.HasExited) { $sink.Kill() }
@@ -157,6 +152,7 @@ $fail = $false
 function Check($ok, $msg) { if ($ok) { Write-Host "ok:   $msg" } else { Write-Host "FAIL: $msg"; $script:fail = $true } }
 $log = Get-ChildItem (Join-Path $cfg "logs") | Sort-Object LastWriteTime -Descending | Select-Object -First 1
 $text = Get-Content $log.FullName -Raw
+if (!(Write-KitChecks (Test-KitLoadLog $text $cfg))) { $fail = $true }
 Select-String -Path $log.FullName -Pattern "\[rws-multistream\]" | ForEach-Object { $_.Line }
 Write-Host "--- receiver ---"; Get-Content $sinkLog | Select-Object -Last 6
 $frames = 0

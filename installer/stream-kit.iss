@@ -1,13 +1,19 @@
 ; Red Warden Stream Kit - Windows installer (Inno Setup 6)
 ;
-; One installer, one checkbox per tool: Red Warden Multistream and Red Warden Pre-Flight.
+; One installer, one plugin: rws-stream-kit.dll holds Multistream, Pre-Flight and In-Flight. There are no
+; tool components: a tool is switched on or off in the Kit's own settings inside OBS.
 ; Built by tools\package.ps1, which passes /DAppVersion=... and /DStage=... and the
 ; signing tool. Do not run ISCC on this file by hand unless you pass the same defines.
 ;
-; Each plugin installs where Multistream's own installer put it: the per-machine plugin
-; folder OBS 28+ scans, C:\ProgramData\obs-studio\plugins\<module>\bin\64bit + data\locale.
-; Upgrading = running a newer installer over the old one; destinations, settings and stream
-; keys live elsewhere (OBS profile, Windows Credential Manager) and are never touched.
+; The plugin installs where the Kit 1.0.x plugins did: the per-machine plugin folder OBS 28+ scans,
+; C:\ProgramData\obs-studio\plugins\rws-stream-kit\bin\64bit + data\locale.
+; Upgrading = running a newer installer over the old one (same AppId). The installer removes the files
+; of the plugins the Kit replaced (rws-multistream, rws-preflight, rws-inflight, rws-beacon): files by exact
+; name, then each folder only if it is empty. Destinations, settings, reports, hotkeys and stream keys
+; live elsewhere (OBS profile and plugin_config, Windows Credential Manager) and are never touched.
+;
+; Unsigned local builds: /DNoSign (without TestRoot) writes ..\dist-unsigned\...-UNSIGNED-TEST-Setup.exe, a
+; name that can never be mistaken for the release. tools\package.ps1 -NoSign does this.
 ;
 ; TEST BUILDS ONLY: ISCC /DTestRoot=<dir> installs under <dir> instead of ProgramData, needs
 ; no admin rights, uses its own AppId, looks for a TEST-ONLY legacy AppId (never the real one),
@@ -18,7 +24,7 @@
   #error AppVersion must be passed: /DAppVersion=1.0.0
 #endif
 #ifndef Stage
-  #error Stage must be passed: /DStage=<folder holding rws-multistream\ and rws-preflight\>
+  #error Stage must be passed: /DStage=<folder holding rws-stream-kit\>
 #endif
 
 #ifndef MsLogo
@@ -43,7 +49,11 @@ AppId={{035D8EC0-7626-4A56-BF6D-A31548414EFA}
 #endif
 AppName=Red Warden Stream Kit
 AppVersion={#AppVersion}
+#if defined(NoSign) && !defined(TestRoot)
+AppVerName=Red Warden Stream Kit {#AppVersion} (UNSIGNED TEST BUILD)
+#else
 AppVerName=Red Warden Stream Kit {#AppVersion}
+#endif
 AppPublisher=Red Warden Studios LLC
 AppPublisherURL=https://redwardenstudios.com/division/bastion/stream-kit/
 AppSupportURL=https://redwardenstudios.com/division/bastion/stream-kit/
@@ -51,8 +61,8 @@ AppUpdatesURL=https://redwardenstudios.com/division/bastion/stream-kit/
 VersionInfoVersion={#AppVersion}
 VersionInfoCompany=Red Warden Studios LLC
 VersionInfoDescription=Red Warden Stream Kit installer
-; {app} only holds the uninstaller, the licence and the logo. The plugins go under the
-; plugin root, one folder per module.
+; {app} only holds the uninstaller, the licence and the logo. The plugin goes under the
+; plugin root, in its own module folder.
 #ifdef TestRoot
 DefaultDirName={#PluginRoot}\_kit
 PrivilegesRequired=lowest
@@ -71,6 +81,9 @@ UninstallDisplayName=Red Warden Stream Kit (OBS plugins)
 #ifdef TestRoot
 OutputDir=..\.testbed
 OutputBaseFilename=RedWardenStreamKit-{#AppVersion}-TestRoot-Setup
+#elif defined(NoSign)
+OutputDir=..\dist-unsigned
+OutputBaseFilename=RedWardenStreamKit-{#AppVersion}-UNSIGNED-TEST-Setup
 #else
 OutputDir=..\dist
 OutputBaseFilename=RedWardenStreamKit-{#AppVersion}-Setup
@@ -83,46 +96,48 @@ SignTool=rws
 SignedUninstaller=yes
 #endif
 
-[Types]
-Name: "full"; Description: "Full installation (both tools)"
-Name: "custom"; Description: "Custom installation"; Flags: iscustom
-
-[Components]
-Name: "multistream"; Description: "Red Warden Multistream - stream to several platforms at once"; Types: full custom
-Name: "preflight"; Description: "Red Warden Pre-Flight - checks your setup before you go live"; Types: full custom
-
 [Files]
-; The DLLs arrive already signed by package.ps1; Inno signs only setup.exe and the uninstaller.
-Source: "{#Stage}\rws-multistream\bin\64bit\rws-multistream.dll"; DestDir: "{#PluginRoot}\rws-multistream\bin\64bit"; Flags: ignoreversion; Components: multistream
-Source: "{#Stage}\rws-multistream\data\*"; DestDir: "{#PluginRoot}\rws-multistream\data"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: multistream
-Source: "{#Stage}\rws-preflight\bin\64bit\rws-preflight.dll"; DestDir: "{#PluginRoot}\rws-preflight\bin\64bit"; Flags: ignoreversion; Components: preflight
-Source: "{#Stage}\rws-preflight\data\*"; DestDir: "{#PluginRoot}\rws-preflight\data"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: preflight
+; The DLL arrives already signed by package.ps1; Inno signs only setup.exe and the uninstaller.
+; The .pdb is NOT installed: it is 15 MB, carries the build machine's paths, and users never need it.
+; package.ps1 keeps it in dist\symbols for our own crash symbolication.
+Source: "{#Stage}\rws-stream-kit\bin\64bit\rws-stream-kit.dll"; DestDir: "{#PluginRoot}\rws-stream-kit\bin\64bit"; Flags: ignoreversion
+Source: "{#Stage}\rws-stream-kit\data\*"; DestDir: "{#PluginRoot}\rws-stream-kit\data"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\LICENSE"; DestDir: "{app}"; DestName: "LICENSE.txt"; Flags: ignoreversion
 Source: "..\NOTICE.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#MsLogo}"; DestDir: "{app}"; Flags: ignoreversion
 
 [InstallDelete]
-; Never a whole-directory delete: a user's own files in a plugin folder must survive. Remove exactly
-; the files these installers place (dll, a stray pdb, each locale ini), then each folder only if empty,
-; bottom-up. A tool that is unchecked is removed if an earlier install left it. (When a locale is
-; added, add its ini here too.)
-Type: files; Name: "{#PluginRoot}\rws-multistream\bin\64bit\rws-multistream.dll"; Check: not WizardIsComponentSelected('multistream')
+; The plugins the Kit replaced. Never a whole-directory delete and never plugin_config: a user's own files in
+; an old plugin folder must survive. For each old module remove exactly the files an installer or a dev build
+; places (dll, pdb, the en-US locale ini), then each folder only if it is empty, bottom-up. A folder that still
+; holds anything else stays. (Kit 1.0.x shipped only the dll and the locale ini per plugin.)
+; Multistream and Pre-Flight: Kit 1.0.x, and standalone Multistream 1.0.0 once its own uninstaller has run.
+Type: files; Name: "{#PluginRoot}\rws-multistream\bin\64bit\rws-multistream.dll"
 Type: files; Name: "{#PluginRoot}\rws-multistream\bin\64bit\rws-multistream.pdb"
-Type: files; Name: "{#PluginRoot}\rws-multistream\data\locale\en-US.ini"; Check: not WizardIsComponentSelected('multistream')
-Type: dirifempty; Name: "{#PluginRoot}\rws-multistream\data\locale"; Check: not WizardIsComponentSelected('multistream')
-Type: dirifempty; Name: "{#PluginRoot}\rws-multistream\data"; Check: not WizardIsComponentSelected('multistream')
-Type: dirifempty; Name: "{#PluginRoot}\rws-multistream\bin\64bit"; Check: not WizardIsComponentSelected('multistream')
-Type: dirifempty; Name: "{#PluginRoot}\rws-multistream\bin"; Check: not WizardIsComponentSelected('multistream')
-Type: dirifempty; Name: "{#PluginRoot}\rws-multistream"; Check: not WizardIsComponentSelected('multistream')
-Type: files; Name: "{#PluginRoot}\rws-preflight\bin\64bit\rws-preflight.dll"; Check: not WizardIsComponentSelected('preflight')
+Type: files; Name: "{#PluginRoot}\rws-multistream\data\locale\en-US.ini"
+Type: dirifempty; Name: "{#PluginRoot}\rws-multistream\data\locale"
+Type: dirifempty; Name: "{#PluginRoot}\rws-multistream\data"
+Type: dirifempty; Name: "{#PluginRoot}\rws-multistream\bin\64bit"
+Type: dirifempty; Name: "{#PluginRoot}\rws-multistream\bin"
+Type: dirifempty; Name: "{#PluginRoot}\rws-multistream"
+Type: files; Name: "{#PluginRoot}\rws-preflight\bin\64bit\rws-preflight.dll"
 Type: files; Name: "{#PluginRoot}\rws-preflight\bin\64bit\rws-preflight.pdb"
-Type: files; Name: "{#PluginRoot}\rws-preflight\data\locale\en-US.ini"; Check: not WizardIsComponentSelected('preflight')
-Type: dirifempty; Name: "{#PluginRoot}\rws-preflight\data\locale"; Check: not WizardIsComponentSelected('preflight')
-Type: dirifempty; Name: "{#PluginRoot}\rws-preflight\data"; Check: not WizardIsComponentSelected('preflight')
-Type: dirifempty; Name: "{#PluginRoot}\rws-preflight\bin\64bit"; Check: not WizardIsComponentSelected('preflight')
-Type: dirifempty; Name: "{#PluginRoot}\rws-preflight\bin"; Check: not WizardIsComponentSelected('preflight')
-Type: dirifempty; Name: "{#PluginRoot}\rws-preflight"; Check: not WizardIsComponentSelected('preflight')
-; Multistream 0.1.x was installed under its working name, "Beacon": its files only, then its folders if empty.
+Type: files; Name: "{#PluginRoot}\rws-preflight\data\locale\en-US.ini"
+Type: dirifempty; Name: "{#PluginRoot}\rws-preflight\data\locale"
+Type: dirifempty; Name: "{#PluginRoot}\rws-preflight\data"
+Type: dirifempty; Name: "{#PluginRoot}\rws-preflight\bin\64bit"
+Type: dirifempty; Name: "{#PluginRoot}\rws-preflight\bin"
+Type: dirifempty; Name: "{#PluginRoot}\rws-preflight"
+; In-Flight was never released on its own; a development build may have been installed.
+Type: files; Name: "{#PluginRoot}\rws-inflight\bin\64bit\rws-inflight.dll"
+Type: files; Name: "{#PluginRoot}\rws-inflight\bin\64bit\rws-inflight.pdb"
+Type: files; Name: "{#PluginRoot}\rws-inflight\data\locale\en-US.ini"
+Type: dirifempty; Name: "{#PluginRoot}\rws-inflight\data\locale"
+Type: dirifempty; Name: "{#PluginRoot}\rws-inflight\data"
+Type: dirifempty; Name: "{#PluginRoot}\rws-inflight\bin\64bit"
+Type: dirifempty; Name: "{#PluginRoot}\rws-inflight\bin"
+Type: dirifempty; Name: "{#PluginRoot}\rws-inflight"
+; Multistream 0.1.x was installed under its working name, "Beacon".
 Type: files; Name: "{#PluginRoot}\rws-beacon\bin\64bit\rws-beacon.dll"
 Type: files; Name: "{#PluginRoot}\rws-beacon\bin\64bit\rws-beacon.pdb"
 Type: files; Name: "{#PluginRoot}\rws-beacon\data\locale\en-US.ini"
@@ -133,7 +148,7 @@ Type: dirifempty; Name: "{#PluginRoot}\rws-beacon\bin"
 Type: dirifempty; Name: "{#PluginRoot}\rws-beacon"
 
 [Messages]
-FinishedLabel=Red Warden Stream Kit is installed.%n%nStart OBS, then open the Docks menu: Red Warden Multistream and Red Warden Pre-Flight.
+FinishedLabel=Red Warden Stream Kit is installed.%n%nStart OBS and look for the RW Stream Kit dock (Docks menu). Multistream, Pre-Flight and In-Flight are switched on or off in the Kit's settings.
 
 [Code]
 const

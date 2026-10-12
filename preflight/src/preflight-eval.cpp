@@ -349,12 +349,58 @@ WindowStats FrameWindow::stats(qint64 nowMs) const
 
 // ---- MicTestAnalyzer ----
 
+float powerMeanDb(const std::vector<float> &levelsDb, float floorDb)
+{
+	double sum = 0.0;
+	size_t n = 0;
+	for (float v : levelsDb) {
+		if (std::isnan(v) || !(v > floorDb))
+			continue;
+		sum += std::pow(10.0, static_cast<double>(v) / 10.0);
+		++n;
+	}
+	if (n == 0)
+		return -std::numeric_limits<float>::infinity();
+	return static_cast<float>(10.0 * std::log10(sum / static_cast<double>(n)));
+}
+
+QString formatDb(float db)
+{
+	if (std::isnan(db) || db <= -200.0f)
+		return QStringLiteral("-inf");
+	double r = std::round(static_cast<double>(db) * 10.0) / 10.0;
+	if (r == 0.0)
+		r = 0.0; // -0.0 prints as "-0.0"
+	return QString::number(r, 'f', 1);
+}
+
 void MicTestAnalyzer::start(qint64 tMs)
 {
 	start_ = tMs;
 	peaks_.clear();
+	mags_.clear();
 	haveOld_ = false;
 	oldFloorDb_ = 0.0f;
+}
+
+void MicTestAnalyzer::add(qint64 tMs, float peakDb, float magnitudeDb)
+{
+	const qint64 off = tMs - start_;
+	if (off < 0 || off > kMicTestWindowMs)
+		return;
+	add(tMs, peakDb);
+	mags_.push_back(magnitudeDb);
+}
+
+MicNumbers MicTestAnalyzer::numbers() const
+{
+	MicNumbers n;
+	if (peaks_.empty())
+		return n;
+	n.valid = true;
+	n.loudestDb = *std::max_element(peaks_.begin(), peaks_.end());
+	n.typicalDb = powerMeanDb(mags_, kMicDigitalSilenceDb);
+	return n;
 }
 
 void MicTestAnalyzer::add(qint64 tMs, float peakDb)

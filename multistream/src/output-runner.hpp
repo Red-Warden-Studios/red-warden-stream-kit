@@ -38,6 +38,11 @@ public:
 	double kbps() const { return rateKbps; }
 	int droppedFrames() const;
 	int totalFrames() const;
+	// Names the CURRENT obs_output: a new value for every output this runner creates (one process-wide counter,
+	// so a runner that is deleted and recreated never repeats a value); 0 while it has no output. In-Flight's
+	// Network light compares it between ticks to know a destination's frame counters belong to another output.
+	// UI thread, like everything else here.
+	uint64_t outputSerial() const { return serial; }
 	bool busy() const { return st == State::Starting || st == State::Live || st == State::Reconnecting || st == State::Stopping; }
 
 	void poll(); // call ~1/s from the UI to refresh bitrate
@@ -85,6 +90,7 @@ private:
 	// Bumped whenever the output is released; queued libobs callbacks from an
 	// older output compare against it and are dropped (see output-runner.cpp).
 	std::atomic<uint64_t> gen{0};
+	uint64_t serial = 0; // see outputSerial()
 	bool stopRequested = false;
 	bool sharedMode = false;
 	int sharedKeyint = -1;

@@ -36,7 +36,7 @@ struct Settings {
 	bool updateChecks = true; // the update notice off switch (key "check_updates")
 
 	// Defaults when the file is missing or unreadable. UI thread; needs the module loaded
-	// (obs_module_config_path).
+	// (kitpaths, see common/kit-paths.hpp).
 	static Settings load();
 	// Merges into the existing file, so keys this build does not know about survive.
 	bool save() const;

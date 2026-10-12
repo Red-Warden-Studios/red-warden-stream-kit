@@ -13,6 +13,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <QColor>
 #include <QDialog>
+#include <QPointer>
 
 class QCheckBox;
 class QComboBox;
@@ -36,7 +37,14 @@ public:
 	QString newKey() const;
 	bool removeRequested() const { return removeFlag; }
 
+	// The dialog is a modal of its dock (MultistreamDock::execModal rejects it at OBS exit). A dialog this one has
+	// open on top of itself (the Twitch bandwidth test, the Remove question) is tracked in nested_ and ended first,
+	// or it would stay up as an orphan modal over a closing OBS.
+	void reject() override;
+
 private:
+	int execNested(QDialog *dlg); // heap dialog, modal over this one, tracked in nested_; -1 when it was destroyed
+	QPointer<QDialog> nested_;
 	void onPlatformChanged();
 	void onEncoderModeChanged();
 	void validate();

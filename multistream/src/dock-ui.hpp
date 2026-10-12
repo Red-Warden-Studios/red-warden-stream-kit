@@ -48,6 +48,7 @@ struct RowView {
 	Status status = Status::Off;
 	QString statusText; // e.g. "LIVE" / "Retrying in 0:42"
 	QString statusDetail; // e.g. "6.1 Mbps" or the error
+	QString dropBadge;    // e.g. "3.1% DROPPED": the Network light (In-Flight) is judging this destination bad
 	QString meta;         // e.g. "Shared encoder, 256 kbps audio"
 	QString tip;          // optional advice line
 	bool tipIsNote = false; // good to know, not a warning: shown quietly
@@ -109,6 +110,7 @@ private:
 	QLabel *name;
 	ToggleSwitch *toggle;
 	QLabel *pill;
+	QLabel *dropPill;
 	QLabel *detail;
 	QLabel *meta;
 	QLabel *tip;

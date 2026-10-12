@@ -2,4 +2,5 @@ build_x64/
 .deps/
 .testbed/
 dist/
+dist-unsigned/
 staging/

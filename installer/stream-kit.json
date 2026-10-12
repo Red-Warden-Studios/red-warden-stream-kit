@@ -1,6 +1,6 @@
 {
-  "latest": "1.0.1",
+  "latest": "1.1.0",
   "url": "https://redwardenstudios.com/division/bastion/stream-kit/",
-  "notes": "First release of the Red Warden Stream Kit: Multistream and Pre-Flight in one installer.",
+  "notes": "One plugin and one dock: Multistream, Pre-Flight and the new In-Flight live checks.",
   "min_obs": "31.1.0"
 }

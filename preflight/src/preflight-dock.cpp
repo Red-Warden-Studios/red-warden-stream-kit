@@ -5,6 +5,8 @@ SPDX-License-Identifier: GPL-2.0-or-later
 */
 
 #include "preflight-dock.hpp"
+#include "kit-paths.hpp"
+#include "fit-scroll-area.hpp"
 #include "settings-dialog.hpp"
 
 #include <obs-module.h>
@@ -110,7 +112,9 @@ QFrame *makeCard(QWidget *parent, const char *name)
 {
 	auto *f = new QFrame(parent);
 	f->setObjectName(QString::fromLatin1(name));
-	f->setStyleSheet(QStringLiteral("#%1 { background: palette(alternate-base); border: 1px solid palette(mid);"
+	// A translucent grey wash, so it reads on both light and dark themes (palette(alternate-base) is
+	// light under OBS's dark theme while the text is light too). Same as In-Flight's cards.
+	f->setStyleSheet(QStringLiteral("#%1 { background: rgba(128, 128, 128, 40); border: 1px solid rgba(128, 128, 128, 110);"
 					" border-radius: 4px; }")
 				 .arg(QString::fromLatin1(name)));
 	return f;
@@ -145,6 +149,14 @@ public:
 		msg = new QLabel(this);
 		msg->setWordWrap(true);
 		v->addWidget(msg);
+		if (id == CheckId::MicTest) {
+			// "Loudest -8.2 dB   Typical -21.5 dB": label muted, number bold. Hidden until a test has numbers.
+			numbers = new QLabel(this);
+			numbers->setTextFormat(Qt::RichText);
+			numbers->setWordWrap(true);
+			numbers->setVisible(false);
+			v->addWidget(numbers);
+		}
 		if (id == CheckId::Custom) {
 			itemsLayout = new QVBoxLayout();
 			itemsLayout->setSpacing(0);
@@ -171,6 +183,18 @@ public:
 		}
 		filled = true;
 	}
+
+	// Loudest / Typical, already formatted ("-8.2", "-inf"); both empty clears the line. True when it changed.
+	bool setNumbers(const QString &loudest, const QString &typical)
+	{
+		if (!numbers || (loudest == loudestShown && typical == typicalShown))
+			return false;
+		loudestShown = loudest;
+		typicalShown = typical;
+		renderNumbers();
+		return true;
+	}
+	bool numbersVisible() const { return numbers && !loudestShown.isEmpty(); }
 
 	bool itemsBuiltFor(const QStringList &items) const { return itemsBuilt && builtItems == items; }
 
@@ -210,10 +234,40 @@ public:
 	CheckId id;
 	QPushButton *button = nullptr;
 
+protected:
+	void changeEvent(QEvent *e) override
+	{
+		QWidget::changeEvent(e);
+		if (e->type() == QEvent::PaletteChange)
+			renderNumbers(); // the muted colour comes from the palette (no style sheet: nothing to re-enter)
+	}
+
 private:
+	void renderNumbers()
+	{
+		if (!numbers)
+			return;
+		if (loudestShown.isEmpty()) {
+			numbers->setVisible(false);
+			return;
+		}
+		// Muted label = the text colour pulled 45% toward the window colour (reads on OBS's dark and light themes).
+		const QColor t = palette().color(QPalette::WindowText);
+		const QColor w = palette().color(QPalette::Window);
+		const QColor m = QColor::fromRgbF(t.redF() * 0.55 + w.redF() * 0.45, t.greenF() * 0.55 + w.greenF() * 0.45,
+						  t.blueF() * 0.55 + w.blueF() * 0.45);
+		numbers->setText(QStringLiteral("<span style=\"color:%1\">%2</span> <b>%3 dB</b>"
+						"&nbsp;&nbsp;&nbsp;&nbsp;<span style=\"color:%1\">%4</span> <b>%5 dB</b>")
+					 .arg(m.name(), T("PreFlight.MicLoudest", "Loudest"), loudestShown,
+					      T("PreFlight.MicTypical", "Typical"), typicalShown));
+		numbers->setVisible(true);
+	}
+
 	StatusMark *mark = nullptr;
 	QLabel *title = nullptr;
 	QLabel *msg = nullptr;
+	QLabel *numbers = nullptr;
+	QString loudestShown, typicalShown;
 	QVBoxLayout *itemsLayout = nullptr;
 	QVector<QCheckBox *> boxes;
 	QStringList builtItems;
@@ -227,14 +281,7 @@ private:
 // The folder holding every plugin's config folder (.../plugin_config), for the shared Stream Kit preference.
 static QString kitConfigRoot()
 {
-	QString root;
-	if (char *ours = obs_module_config_path("")) {
-		QDir dir(QString::fromUtf8(ours)); // .../plugin_config/rws-preflight/
-		bfree(ours);
-		if (dir.cdUp())
-			root = dir.absolutePath();
-	}
-	return root;
+	return QString::fromUtf8(kitpaths::pluginConfigRoot().c_str());
 }
 
 PreflightDock::PreflightDock(QWidget *parent) : QWidget(parent)
@@ -277,7 +324,7 @@ PreflightDock::PreflightDock(QWidget *parent) : QWidget(parent)
 	});
 	root->addWidget(updateNote);
 
-	auto *scroll = new QScrollArea(this);
+	auto *scroll = new FitScrollArea(this);
 	scroll->setWidgetResizable(true);
 	scroll->setFrameShape(QFrame::NoFrame);
 	scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
@@ -308,10 +355,15 @@ PreflightDock::PreflightDock(QWidget *parent) : QWidget(parent)
 	rowsLayout->setSpacing(4);
 	cl->addWidget(rowsHost);
 	cl->addStretch(1);
-	scroll->setWidget(content);
-	root->addWidget(scroll, 1);
+	scroll->setFitWidget(content);
+	root->addWidget(scroll);
 
+	// Two rows: Check & Go Live on its own, then Done / Levels / Settings. One row of four buttons needed ~390 px
+	// and widened the whole Stream Kit dock.
+	auto *barOuter = new QVBoxLayout();
+	barOuter->setSpacing(4);
 	auto *bar = new QHBoxLayout();
+	auto *bar2 = new QHBoxLayout();
 	goBtn = new QPushButton(this);
 	{
 		QFont f = goBtn->font();
@@ -321,15 +373,31 @@ PreflightDock::PreflightDock(QWidget *parent) : QWidget(parent)
 	goBtn->setMinimumHeight(30);
 	connect(goBtn, &QPushButton::clicked, this, [this] { goLive(); });
 	bar->addWidget(goBtn, 1);
+	// Only shown when a host (the Kit dock) can act on it: Done = finished checking, hand over to In-Flight.
+	doneBtn = new QPushButton(T("PreFlight.Done", "Done"), this);
+	doneBtn->setMinimumHeight(30);
+	doneBtn->setToolTip(T("PreFlight.DoneTooltip", "Finished checking: switch to In-Flight and stand by"));
+	doneBtn->setVisible(false);
+	connect(doneBtn, &QPushButton::clicked, this, [this] { emit doneRequested(); });
+	bar2->addWidget(doneBtn, 1);
+	levelsBtn = new QPushButton(T("PreFlight.LevelsButton", "Levels"), this);
+	levelsBtn->setMinimumHeight(30);
+	levelsBtn->setToolTip(T("PreFlight.LevelsTooltip", "Show or hide the level meters (check your mic and sound before you go live)"));
+	levelsBtn->setVisible(false);
+	connect(levelsBtn, &QPushButton::clicked, this, [this] { emit levelsRequested(); });
+	bar2->addWidget(levelsBtn, 1);
 	// Text, not a gear glyph: U+2699 has no glyph in OBS's default font and rendered blank.
 	gearBtn = new QPushButton(T("PreFlight.SettingsButton", "Settings"), this);
 	gearBtn->setMinimumHeight(30);
 	gearBtn->setToolTip(T("PreFlight.SettingsTooltip", "Pre-Flight settings"));
 	connect(gearBtn, &QPushButton::clicked, this, [this] { openSettings(); });
-	bar->addWidget(gearBtn);
-	root->addLayout(bar);
+	bar2->addWidget(gearBtn, 1);
+	barOuter->addLayout(bar);
+	barOuter->addLayout(bar2);
+	root->addLayout(barOuter);
 
 	connect(controller, &PreflightController::resultsChanged, this, &PreflightDock::applyResults);
+	connect(controller, &PreflightController::micNumbersChanged, this, &PreflightDock::applyMicNumbers);
 	connect(controller, &PreflightController::micTestRunningChanged, this, [this](bool r) {
 		micRunning = r;
 		updateMicButton();
@@ -349,12 +417,56 @@ PreflightDock::~PreflightDock()
 	shutdown();
 }
 
+// Idempotent (EXIT, then the destructor). No event loop runs in here: the controller's probe stop is a plain
+// bounded wait, so nothing can be deleted under us except by the dialog's reject() signals, hence the check.
 void PreflightDock::shutdown()
 {
+	if (shutDown_)
+		return;
+	shutDown_ = true;
 	closing = true;
+	QPointer<PreflightDock> self(this);
+	if (modal_)
+		modal_->reject(); // an open settings dialog / go-live box ends here (its caller sees `closing`)
+	if (!self)
+		return;
 	updates.stop();
 	if (controller)
 		controller->shutdown(); // stops the timer, the mic test and the Multistream worker
+}
+
+void PreflightDock::resetForNewStream()
+{
+	if (closing || !controller)
+		return;
+	ticks.fill(false);
+	if (PreflightCheckRow *r = rows.value(static_cast<int>(CheckId::Custom), nullptr))
+		r->setTicks(ticks);
+	banner->setVisible(false);
+	controller->resetForNewStream(); // re-runs the checks; resultsChanged repaints the rows
+}
+
+void PreflightDock::setDoneVisible(bool visible)
+{
+	if (doneBtn)
+		doneBtn->setVisible(visible);
+}
+
+void PreflightDock::setMultistreamSource(preflight::MultistreamProbe::Source src)
+{
+	if (controller)
+		controller->setMultistreamSource(std::move(src));
+}
+
+bool PreflightDock::levelsButtonVisible() const
+{
+	return levelsBtn && levelsBtn->isVisibleTo(this);
+}
+
+void PreflightDock::setLevelsAvailable(bool available)
+{
+	if (levelsBtn)
+		levelsBtn->setVisible(available);
 }
 
 QWidget *PreflightDock::mainWindow() const
@@ -368,11 +480,16 @@ void PreflightDock::handleFrontendEvent(obs_frontend_event event)
 		shutdown();
 		return;
 	}
+	// OBS emits SCRIPTING_SHUTDOWN BEFORE ClearSceneData() (OBSBasic.cpp:1704 vs :1710); a running mic test holds a
+	// volmeter and a source reference, so it ends here rather than at EXIT.
+	if (event == OBS_FRONTEND_EVENT_SCRIPTING_SHUTDOWN) {
+		if (controller)
+			controller->releaseSources();
+		return;
+	}
 	if (!controller || closing)
 		return;
 	controller->handleFrontendEvent(event);
-	if (event == OBS_FRONTEND_EVENT_FINISHED_LOADING)
-		scheduleUpdateCheck();
 	switch (event) {
 	case OBS_FRONTEND_EVENT_STREAMING_STARTING:
 		live = true;
@@ -447,6 +564,22 @@ void PreflightDock::applyResults(const QVector<CheckResult> &results)
 
 	syncCustomItems();
 	updateMicButton();
+	applyMicNumbers(); // the Mic test row may just have been created
+}
+
+void PreflightDock::applyMicNumbers()
+{
+	PreflightCheckRow *row = rows.value(static_cast<int>(CheckId::MicTest), nullptr);
+	if (!row || closing)
+		return;
+	const preflight::MicNumbers n = controller->micNumbers();
+	const QString loud = n.valid ? preflight::formatDb(n.loudestDb) : QString();
+	const QString typ = n.valid ? preflight::formatDb(n.typicalDb) : QString();
+	if (!row->setNumbers(loud, typ))
+		return;
+	if (testHooksEnabled())
+		obs_log(LOG_INFO, "mic numbers shown: %s", n.valid ? QStringLiteral("Loudest %1 dB Typical %2 dB").arg(loud, typ).toUtf8().constData() : "cleared");
+	emit micNumbersShown(row->numbersVisible());
 }
 
 void PreflightDock::syncCustomItems()
@@ -490,10 +623,17 @@ void PreflightDock::openSettings()
 		return;
 	preflight::Settings current = controller->settings();
 	current.updateChecks = updatecheck::loadSharedCheckUpdates(kitConfigRoot()); // Multistream may have changed it
-	SettingsDialog dlg(current, mainWindow());
-	if (dlg.exec() != QDialog::Accepted || closing)
+	// On the heap, held by a QPointer, rejected by shutdown(): a dialog on the stack with the main window as
+	// parent would be destroyed twice if OBS tears the main window down while it is open.
+	auto *dlg = new SettingsDialog(current, mainWindow());
+	modal_ = dlg;
+	const int rc = dlg->exec();
+	if (!modal_)
+		return; // destroyed under us
+	const preflight::Settings s = dlg->result(); // setupDone = true
+	delete dlg;
+	if (rc != QDialog::Accepted || closing)
 		return;
-	const preflight::Settings s = dlg.result(); // setupDone = true
 	controller->setSettings(s);
 	checkUpdates = s.updateChecks;
 	updatecheck::saveSharedCheckUpdates(kitConfigRoot(), checkUpdates);
@@ -522,15 +662,21 @@ void PreflightDock::goLive()
 		for (const QString &t : d.cautions)
 			body += QStringLiteral("\n") + dot + t;
 	}
-	QMessageBox box(QMessageBox::Warning, T("PreFlight.GoLiveTitle", "Some checks failed"), body,
-			QMessageBox::NoButton, mainWindow());
-	box.setTextFormat(Qt::PlainText);
-	QPushButton *anyway = box.addButton(T("PreFlight.GoAnyway", "Go live anyway"), QMessageBox::AcceptRole);
-	QPushButton *cancel = box.addButton(T("PreFlight.Cancel", "Cancel"), QMessageBox::RejectRole);
-	box.setDefaultButton(cancel);
-	box.setEscapeButton(cancel);
-	box.exec();
-	if (closing || box.clickedButton() != anyway)
+	// Heap + QPointer + rejected by shutdown(), like the settings dialog.
+	auto *box = new QMessageBox(QMessageBox::Warning, T("PreFlight.GoLiveTitle", "Some checks failed"), body,
+				    QMessageBox::NoButton, mainWindow());
+	box->setTextFormat(Qt::PlainText);
+	QPushButton *anyway = box->addButton(T("PreFlight.GoAnyway", "Go live anyway"), QMessageBox::AcceptRole);
+	QPushButton *cancel = box->addButton(T("PreFlight.Cancel", "Cancel"), QMessageBox::RejectRole);
+	box->setDefaultButton(cancel);
+	box->setEscapeButton(cancel);
+	modal_ = box;
+	box->exec();
+	if (!modal_)
+		return; // destroyed under us
+	const bool goAnyway = box->clickedButton() == anyway;
+	delete box;
+	if (closing || !goAnyway)
 		return;
 	startedFromDock = true;
 	QTimer::singleShot(5000, this, [this] { startedFromDock = false; });
@@ -539,29 +685,43 @@ void PreflightDock::goLive()
 
 void PreflightDock::installTestHooks()
 {
+	// Mic test with numbers (test copy only): RWS_PREFLIGHT_TEST_MICTEST=<seconds> starts the 5 s mic test that long after
+	// the dock exists (the harness points the mic at a tone); RWS_PREFLIGHT_TEST_MICTEST_RESET=1 then presses the Kit's
+	// Reset equivalent 3 s after the numbers appear, to see them cleared.
+	if (testHooksEnabled() && qEnvironmentVariableIsSet("RWS_PREFLIGHT_TEST_MICTEST")) {
+		bool ok = false;
+		const int secs = qEnvironmentVariable("RWS_PREFLIGHT_TEST_MICTEST").toInt(&ok);
+		QTimer::singleShot((ok && secs > 0 ? secs : 8) * 1000, this, [this] {
+			if (closing)
+				return;
+			obs_log(LOG_INFO, "test hook: starting the mic test");
+			controller->startMicTest();
+		});
+		if (qEnvironmentVariableIsSet("RWS_PREFLIGHT_TEST_MICTEST_RESET"))
+			connect(this, &PreflightDock::micNumbersShown, this, [this](bool shown) {
+				if (!shown || closing)
+					return;
+				QTimer::singleShot(3000, this, [this] {
+					if (closing)
+						return;
+					obs_log(LOG_INFO, "test hook: reset after the mic test");
+					controller->resetForNewStream();
+				});
+			});
+	}
 	const QString shotPath = qEnvironmentVariable("RWS_PREFLIGHT_TEST_SHOT");
 	if (!shotPath.isEmpty()) {
 		QTimer::singleShot(40000, this, [this, shotPath] {
-			if (closing)
-				return;
-			for (QWidget *w = parentWidget(); w; w = w->parentWidget()) {
-				if (auto *d = qobject_cast<QDockWidget *>(w)) {
-					if (!d->isVisible())
-						d->show();
-					// A docked widget cannot be resized (the main window's layout owns its size), so
-					// float it first; then the whole dock fits at a phone-ish 360x720 for the screenshot.
-					d->setFloating(true);
-					d->resize(360, 720);
-					d->raise();
-					break;
-				}
-			}
+			// Offscreen: nothing is shown or floated. The dock is one page of the Kit dock now (possibly a
+			// hidden page), so it is rendered by grab() at a phone-ish 360x720, which lays the widget out
+			// on its own without any window.
 			QTimer::singleShot(1000, this, [this, shotPath] {
 				if (closing)
 					return;
-				if (width() < 100 || height() < 100)
-					resize(sizeHint().expandedTo(QSize(320, 480)));
+				const QSize before = size();
+				resize(360, 720);
 				const QPixmap px = grab();
+				resize(before);
 				if (!px.isNull() && px.save(shotPath, "PNG"))
 					obs_log(LOG_INFO, "ui-shot saved (%dx%d)", px.width(), px.height());
 				else
@@ -575,7 +735,10 @@ void PreflightDock::installTestHooks()
 			if (closing)
 				return;
 			auto *dlg = new SettingsDialog(controller->settings(), mainWindow());
-			dlg->show(); // non-blocking
+			// Offscreen, like the Kit's other test grabs: rendered by Qt, never a window on the screen.
+			dlg->setAttribute(Qt::WA_DontShowOnScreen);
+			dlg->setWindowModality(Qt::NonModal);
+			dlg->show(); // non-blocking; the 1.5 s timer below lets it lay out before the grab
 			QTimer::singleShot(1500, this, [this, dlg, setPath] {
 				const QPixmap px = dlg->grab();
 				if (!px.isNull() && px.save(setPath, "PNG"))
@@ -587,28 +750,6 @@ void PreflightDock::installTestHooks()
 			});
 		});
 	}
-}
-
-void PreflightDock::scheduleUpdateCheck()
-{
-	// Exactly one Stream Kit notice: Multistream owns it whenever it is loaded.
-	// Called once OBS has finished loading, so every module is known. Never in the test copy.
-	if (!checkUpdates || testHooksEnabled() || updateCheckScheduled)
-		return;
-	updateCheckScheduled = true;
-	// Scheduled only if updates are on now (turning them on mid-session may wait until the next OBS
-	// start); when the timer fires the shared file is re-read, so turning them off elsewhere wins.
-	QTimer::singleShot(15000, this, [this] {
-		if (closing)
-			return;
-		checkUpdates = updatecheck::loadSharedCheckUpdates(kitConfigRoot());
-		if (!checkUpdates)
-			return;
-		const bool msLoaded = obs_get_module("rws-multistream") != nullptr;
-		if (!updatecheck::shouldShowKitNotice(false, msLoaded))
-			return;
-		updates.start(QString::fromLatin1(updatecheck::kKitVersion));
-	});
 }
 
 void PreflightDock::showUpdate(const updatecheck::Manifest &m)

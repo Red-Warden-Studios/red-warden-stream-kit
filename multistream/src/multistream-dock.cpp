@@ -5,6 +5,9 @@ SPDX-License-Identifier: GPL-2.0-or-later
 */
 
 #include "multistream-dock.hpp"
+#include "kit-paths.hpp"
+#include "kit-cost.hpp"
+#include "fit-scroll-area.hpp"
 #include "bandwidth-dialog.hpp"
 #include "credentials.hpp"
 #include "edit-dialog.hpp"
@@ -39,6 +42,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
 #include <QMessageBox>
 #include <QPainter>
 #include <QPixmap>
+#include <QScopeGuard>
 #include <QPushButton>
 #include <QScrollArea>
 #include <QToolButton>
@@ -102,6 +106,7 @@ bool mainStreamProducing()
 	obs_output_release(main);
 	return ok;
 }
+
 } // namespace
 
 // ---- MultistreamDock -----------------------------------------------------------
@@ -109,14 +114,7 @@ bool mainStreamProducing()
 // The folder holding every plugin's config folder (.../plugin_config), for the shared Stream Kit preference.
 static QString kitConfigRoot()
 {
-	QString root;
-	if (char *ours = obs_module_config_path("")) {
-		QDir dir(QString::fromUtf8(ours)); // .../plugin_config/rws-multistream/
-		bfree(ours);
-		if (dir.cdUp())
-			root = dir.absolutePath();
-	}
-	return root;
+	return QString::fromUtf8(kitpaths::pluginConfigRoot().c_str());
 }
 
 MultistreamDock::MultistreamDock(QWidget *parent) : QWidget(parent)
@@ -166,18 +164,7 @@ MultistreamDock::MultistreamDock(QWidget *parent) : QWidget(parent)
 	QAction *importAct = menu->addAction(QStringLiteral("Import from obs-multi-rtmp or Aitum..."));
 	menu->addSeparator();
 	QAction *reportAct = menu->addAction(QStringLiteral("Last stream report"));
-	menu->addSeparator();
-	QAction *updatesAct = menu->addAction(QStringLiteral("Tell me when an update is available"));
-	updatesAct->setCheckable(true);
-	connect(updatesAct, &QAction::toggled, this, [this](bool on) {
-		if (globals.checkUpdates == on)
-			return;
-		globals.checkUpdates = on;
-		saveGlobalSettings(globals);
-		updatecheck::saveSharedCheckUpdates(kitConfigRoot(), on); // shared with Pre-Flight
-		if (!on && updateNote)
-			updateNote->setVisible(false);
-	});
+	// ("Tell me when an update is available" moved to the Stream Kit settings, Updates tab.)
 	connect(reportAct, &QAction::triggered, this, &MultistreamDock::showReport);
 	connect(importAct, &QAction::triggered, this, &MultistreamDock::importDestinations);
 	connect(testAct, &QAction::triggered, this, &MultistreamDock::startUploadTest);
@@ -189,10 +176,8 @@ MultistreamDock::MultistreamDock(QWidget *parent) : QWidget(parent)
 		saveGlobalSettings(globals);
 		refreshSummary();
 	});
-	connect(menu, &QMenu::aboutToShow, this, [this, testAct, forgetAct, reportAct, updatesAct] {
+	connect(menu, &QMenu::aboutToShow, this, [this, testAct, forgetAct, reportAct] {
 		reportAct->setEnabled(report.hasResult());
-		globals.checkUpdates = updatecheck::loadSharedCheckUpdates(kitConfigRoot()); // Pre-Flight may have changed it
-		updatesAct->setChecked(globals.checkUpdates);
 		const bool live = obs_frontend_streaming_active();
 		testAct->setEnabled(!live && !uploadTesting);
 		testAct->setText(live ? QStringLiteral("Test my upload speed (stop streaming first)")
@@ -224,27 +209,16 @@ MultistreamDock::MultistreamDock(QWidget *parent) : QWidget(parent)
 	recap->setVisible(false);
 	connect(recap, &QLabel::linkActivated, this, [this](const QString &) { showReport(); });
 	hv->addWidget(recap);
-	updateNote = new QLabel(header);
-	updateNote->setWordWrap(true);
-	updateNote->setTextFormat(Qt::RichText);
-	updateNote->setTextInteractionFlags(Qt::LinksAccessibleByMouse | Qt::LinksAccessibleByKeyboard);
-	updateNote->setVisible(false);
-	connect(updateNote, &QLabel::linkActivated, this, [this](const QString &link) {
-		if (link == QLatin1String("download"))
-			QDesktopServices::openUrl(QUrl(pendingUpdate.url));
-		updateNote->setVisible(false); // Download or Not now: gone until next OBS start
-	});
-	hv->addWidget(updateNote);
-	connect(&updates, &UpdateChecker::updateAvailable, this, &MultistreamDock::showUpdate);
 	root->addWidget(header);
 	limits = parseServiceLimits(obsServicesJson());
-	if (char *dir = obs_module_config_path("reports")) {
-		reportsDir = QDir::cleanPath(QString::fromUtf8(dir));
-		bfree(dir);
+	{
+		const std::string dir = kitpaths::toolFile(kitpaths::kMultistream, "reports");
+		if (!dir.empty())
+			reportsDir = QDir::cleanPath(QString::fromUtf8(dir.c_str()));
 	}
 	globals = loadGlobalSettings();
 
-	auto *scroll = new QScrollArea(this);
+	auto *scroll = new FitScrollArea(this);
 	scroll->setWidgetResizable(true);
 	scroll->setFrameShape(QFrame::NoFrame);
 	scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
@@ -254,8 +228,8 @@ MultistreamDock::MultistreamDock(QWidget *parent) : QWidget(parent)
 	list->setContentsMargins(0, 0, 0, 0);
 	list->setSpacing(0);
 	list->addStretch(1);
-	scroll->setWidget(listHost);
-	root->addWidget(scroll, 1);
+	scroll->setFitWidget(listHost);
+	root->addWidget(scroll);
 
 	auto *footer = new QHBoxLayout();
 	footer->setContentsMargins(10, 8, 10, 0);
@@ -287,6 +261,7 @@ MultistreamDock::MultistreamDock(QWidget *parent) : QWidget(parent)
 
 	statsTimer.setInterval(1000);
 	connect(&statsTimer, &QTimer::timeout, this, [this] {
+		kitcost::Scope costScope(kitcost::MultistreamStats); // test-only timing, see kit-cost.hpp
 		for (auto &[id, r] : runners)
 			r->poll();
 		pollMainStream();
@@ -314,7 +289,8 @@ MultistreamDock::MultistreamDock(QWidget *parent) : QWidget(parent)
 						   "Red Warden Multistream: turn all destinations on", onHotkey, this);
 	allOffHotkey = obs_hotkey_register_frontend("rws_multistream.all_off",
 						    "Red Warden Multistream: turn all destinations off", onHotkey, this);
-	if (char *path = obs_module_config_path("hotkeys.json")) {
+	if (const std::string pathStr = kitpaths::toolFile(kitpaths::kMultistream, "hotkeys.json"); !pathStr.empty()) {
+		const char *path = pathStr.c_str();
 		if (obs_data_t *root = obs_data_create_from_json_file_safe(path, "bak")) {
 			for (auto [key, hk] :
 			     {std::pair<const char *, obs_hotkey_id>{"all_on", allOnHotkey}, {"all_off", allOffHotkey}}) {
@@ -324,25 +300,14 @@ MultistreamDock::MultistreamDock(QWidget *parent) : QWidget(parent)
 			}
 			obs_data_release(root);
 		}
-		bfree(path);
 	}
 
 	reload();
 
-	// One look for a newer version, well after OBS has finished starting. Never
-	// in the test copy (no network in the harness, and no surprise notices).
-	// The update preference is shared with Pre-Flight (first run migrates each plugin's old value).
+	// The update look is scheduled by the Kit dock (kit-dock.cpp), not here. The shared preference is still
+	// read once at startup: the first read migrates the pre-merge per-plugin values into the shared file,
+	// and globals.checkUpdates mirrors it into this tool's own settings.json as before.
 	globals.checkUpdates = updatecheck::loadSharedCheckUpdates(kitConfigRoot());
-	// The check is scheduled only if updates are on now (turning them on mid-session may wait until the
-	// next OBS start); when the timer fires the shared file is re-read, so turning them off elsewhere wins.
-	if (globals.checkUpdates && !testHooksEnabled())
-		QTimer::singleShot(15000, this, [this] {
-			if (closing)
-				return;
-			globals.checkUpdates = updatecheck::loadSharedCheckUpdates(kitConfigRoot());
-			if (globals.checkUpdates)
-				updates.start(QString::fromLatin1(updatecheck::kKitVersion)); // Multistream owns the Stream Kit notice
-		});
 
 	// Test copy only: run the Twitch bandwidth test on the named destination
 	// (the harness points it at a local receiver) and photograph the result.
@@ -371,6 +336,13 @@ MultistreamDock::MultistreamDock(QWidget *parent) : QWidget(parent)
 			obs_log(LOG_WARNING, "bandwidth test: no destination named %s", bwTest.toUtf8().constData());
 		});
 	}
+}
+
+void MultistreamDock::testLogListGeometry(const char *tag)
+{
+	for (QScrollArea *sa : findChildren<QScrollArea *>())
+		if (auto *fs = dynamic_cast<FitScrollArea *>(sa))
+			obs_log(LOG_INFO, "list geometry %s: %s", tag, fs->diagnose().toUtf8().constData());
 }
 
 MultistreamDock::~MultistreamDock()
@@ -405,13 +377,12 @@ void MultistreamDock::save()
 	saveConfig(cfg);
 
 	// "All on" / "All off" bindings are global, not per profile.
-	char *dir = obs_module_config_path("");
-	if (dir) {
-		os_mkdirs(dir);
-		bfree(dir);
-	}
-	char *path = obs_module_config_path("hotkeys.json");
-	if (path) {
+	const std::string dir = kitpaths::toolDir(kitpaths::kMultistream);
+	if (!dir.empty())
+		os_mkdirs(dir.c_str());
+	const std::string pathStr = kitpaths::toolFile(kitpaths::kMultistream, "hotkeys.json");
+	if (!pathStr.empty()) {
+		const char *path = pathStr.c_str();
 		obs_data_t *root = obs_data_create();
 		for (auto [key, hk] : {std::pair<const char *, obs_hotkey_id>{"all_on", allOnHotkey}, {"all_off", allOffHotkey}}) {
 			if (hk == OBS_INVALID_HOTKEY_ID)
@@ -422,7 +393,6 @@ void MultistreamDock::save()
 		}
 		obs_data_save_json_safe(root, path, "tmp", "bak");
 		obs_data_release(root);
-		bfree(path);
 	}
 }
 
@@ -689,6 +659,8 @@ ui::RowView MultistreamDock::rowView(const Destination &d)
 				v.statusDetail = mbps(r->kbps());
 				if (const int dropped = r->droppedFrames(); dropped > 0)
 					v.statusDetail += QStringLiteral(", %1 frames dropped").arg(dropped);
+				if (const auto fig = dropFigures_.find(id); fig != dropFigures_.end())
+					v.dropBadge = QStringLiteral("%1% DROPPED").arg(fig->second, 0, 'f', 1);
 			}
 			break;
 		case OutputRunner::State::Starting:
@@ -857,6 +829,22 @@ void MultistreamDock::refreshSummary()
 	}
 	headline->setText(head);
 	subline->setText(sub);
+	{
+		// The Kit dock's section header: short, "of" = how many are on (as the headline above counts).
+		QString s;
+		if (total == 0)
+			s = QStringLiteral("No destinations yet");
+		else if (!obs_frontend_streaming_active())
+			s = on == 0 ? QStringLiteral("All off") : QStringLiteral("Ready on %1 of %2").arg(on).arg(total);
+		else if (live == 0 && busy > 0 && trouble == 0)
+			s = QStringLiteral("Connecting %1 of %2").arg(busy).arg(on);
+		else
+			s = QStringLiteral("Live on %1 of %2").arg(live).arg(on);
+		if (s != summaryText) {
+			summaryText = s;
+			emit summaryChanged(summaryText);
+		}
+	}
 
 	// ---- upload estimate and warnings ----
 	auto fmt = [](double kbpsValue) {
@@ -1152,8 +1140,19 @@ void MultistreamDock::shutdown()
 		return;
 	finishReport(); // OBS closed mid-stream
 	closing = true;
+	// No event loop runs in this function (nothing here pumps events), so the only code that can run foreign
+	// handlers is a dialog's reject(); `self` is re-checked after it.
+	QPointer<MultistreamDock> self(this);
+	// Open edit / import / report dialogs and message boxes end here, innermost first (their callers see `closing`).
+	{
+		const std::vector<QPointer<QDialog>> open = modals_;
+		for (auto it = open.rbegin(); it != open.rend(); ++it)
+			if (*it)
+				(*it)->reject();
+	}
+	if (!self)
+		return;
 	statsTimer.stop();
-	updates.stop(); // join the update-check thread before the plugin can unload
 	uploadCancel = true;
 	if (uploadThread && uploadThread->joinable())
 		uploadThread->join();
@@ -1169,44 +1168,20 @@ void MultistreamDock::shutdown()
 	}
 }
 
-void MultistreamDock::showUpdate(const updatecheck::Manifest &m)
-{
-	if (closing || !updateNote || !globals.checkUpdates)
-		return;
-	pendingUpdate = m;
-	obs_log(LOG_INFO, "Stream Kit update available: %s (installed kit %s, plugin %s)", m.latest.toUtf8().constData(), updatecheck::kKitVersion, PLUGIN_VERSION);
-	const QString obsVersion = QString::fromUtf8(obs_get_version_string());
-	QString text;
-	if (!m.minObs.isEmpty() && updatecheck::compareVersions(obsVersion, m.minObs) < 0) {
-		// Don't invite an upgrade that would break this OBS.
-		text = QStringLiteral("Red Warden Stream Kit %1 is out. It needs OBS %2 or newer (you have %3), so "
-				      "update OBS first. <a href=\"download\">Details</a> &middot; "
-				      "<a href=\"dismiss\">Not now</a>")
-			       .arg(m.latest.toHtmlEscaped(), m.minObs.toHtmlEscaped(), obsVersion.toHtmlEscaped());
-	} else {
-		text = QStringLiteral("Red Warden Stream Kit %1 is available. "
-				      "<a href=\"download\">Download</a> &middot; <a href=\"dismiss\">Not now</a>")
-			       .arg(m.latest.toHtmlEscaped());
-		if (!m.notes.isEmpty())
-			text += QStringLiteral("<br>") + m.notes.toHtmlEscaped();
-	}
-	updateNote->setText(text);
-	updateNote->setVisible(true);
-}
-
 void MultistreamDock::addDestination()
 {
 	Destination d;
 	d.id = newDestinationId();
 	d.platform = QStringLiteral("youtube");
-	EditDialog dlg(d, true, false, this);
-	if (dlg.exec() != QDialog::Accepted)
+	QPointer<EditDialog> dlg(new EditDialog(d, true, false, this));
+	const auto cleanup = qScopeGuard([&] { delete dlg.data(); });
+	if (execModal(dlg) != QDialog::Accepted)
 		return;
-	Destination nd = dlg.destination();
-	if (!creds::storeKey(nd.id, dlg.newKey())) {
-		QMessageBox::warning(this, QStringLiteral("Red Warden Multistream"),
-				     QStringLiteral("Windows Credential Manager would not save the stream key. "
-						    "The destination was not added."));
+	Destination nd = dlg->destination();
+	if (!creds::storeKey(nd.id, dlg->newKey())) {
+		messageBox(QMessageBox::Warning, QStringLiteral("Red Warden Multistream"),
+			   QStringLiteral("Windows Credential Manager would not save the stream key. "
+					  "The destination was not added."));
 		return;
 	}
 	nd.enabled = true;
@@ -1224,12 +1199,13 @@ void MultistreamDock::editDestination(const QString &id)
 	Destination *d = find(id);
 	if (!d)
 		return;
-	EditDialog dlg(*d, false, creds::hasKey(id), this);
-	if (dlg.exec() != QDialog::Accepted)
+	QPointer<EditDialog> dlg(new EditDialog(*d, false, creds::hasKey(id), this));
+	const auto cleanup = qScopeGuard([&] { delete dlg.data(); });
+	if (execModal(dlg) != QDialog::Accepted)
 		return;
 
 	OutputRunner *r = runner(id);
-	if (dlg.removeRequested()) {
+	if (dlg->removeRequested()) {
 		r->shutdown();
 		runners.erase(id);
 		if (auto rit = retries.find(id); rit != retries.end()) {
@@ -1247,13 +1223,13 @@ void MultistreamDock::editDestination(const QString &id)
 	}
 
 	const Destination before = *d;
-	Destination after = dlg.destination();
+	Destination after = dlg->destination();
 	after.enabled = before.enabled;
-	const QString key = dlg.newKey();
+	const QString key = dlg->newKey();
 	if (!key.isEmpty() && !creds::storeKey(id, key))
-		QMessageBox::warning(this, QStringLiteral("Red Warden Multistream"),
-				     QStringLiteral("Windows Credential Manager would not save the new stream key. "
-						    "The old key is still in use."));
+		messageBox(QMessageBox::Warning, QStringLiteral("Red Warden Multistream"),
+			   QStringLiteral("Windows Credential Manager would not save the new stream key. "
+					  "The old key is still in use."));
 	*d = after;
 	if (before.name != after.name)
 		syncHotkeys(); // the hotkey's label carries the name; bindings are kept
@@ -1267,11 +1243,12 @@ void MultistreamDock::editDestination(const QString &id)
 				       before.enc.audioTrack != after.enc.audioTrack || before.enc.width != after.enc.width ||
 				       before.enc.height != after.enc.height;
 	if (connectionChanged && r->busy()) {
-		const auto answer = QMessageBox::question(
-			this, QStringLiteral("Red Warden Multistream"),
+		const auto answer = messageBox(
+			QMessageBox::Question, QStringLiteral("Red Warden Multistream"),
 			QStringLiteral("\"%1\" is live. Reconnect it now with the new settings?\n"
 				       "Viewers on that platform will see a short interruption.")
-				.arg(after.name));
+				.arg(after.name),
+			QMessageBox::Yes | QMessageBox::No);
 		if (answer == QMessageBox::Yes) {
 			r->shutdown();
 			startOne(id);
@@ -1304,16 +1281,17 @@ void MultistreamDock::startUploadTest()
 	if (uploadTesting || closing)
 		return;
 	if (obs_frontend_streaming_active()) {
-		QMessageBox::information(this, QStringLiteral("Red Warden Multistream"),
-					 QStringLiteral("Stop streaming before testing your upload speed. The test uses "
-							"your whole connection and would make your stream drop frames."));
+		messageBox(QMessageBox::Information, QStringLiteral("Red Warden Multistream"),
+			   QStringLiteral("Stop streaming before testing your upload speed. The test uses "
+					  "your whole connection and would make your stream drop frames."));
 		return;
 	}
-	const auto answer = QMessageBox::question(
-		this, QStringLiteral("Test my upload speed"),
+	const auto answer = messageBox(
+		QMessageBox::Question, QStringLiteral("Test my upload speed"),
 		QStringLiteral("This uploads test data to Cloudflare's public speed test (speed.cloudflare.com) for "
 			       "about 10 seconds, the same way speed-test websites do. Nothing about you or your stream "
-			       "is sent.\n\nStart the test?"));
+			       "is sent.\n\nStart the test?"),
+		QMessageBox::Yes | QMessageBox::No);
 	if (answer != QMessageBox::Yes)
 		return;
 	if (uploadThread && uploadThread->joinable())
@@ -1363,22 +1341,28 @@ void MultistreamDock::finishUploadTest(bool ok, double mbpsValue, const QString 
 		saveGlobalSettings(globals);
 		obs_log(LOG_INFO, "upload test: %.1f Mbps", mbpsValue);
 	} else if (error != QLatin1String("Cancelled")) {
-		QMessageBox::warning(this, QStringLiteral("Red Warden Multistream"),
-				     QStringLiteral("The upload test didn't finish: %1\n\nYou can enter your upload speed "
-						    "by hand instead, from any speed-test website.")
-					     .arg(error));
+		messageBox(QMessageBox::Warning, QStringLiteral("Red Warden Multistream"),
+			   QStringLiteral("The upload test didn't finish: %1\n\nYou can enter your upload speed "
+					  "by hand instead, from any speed-test website.")
+				   .arg(error));
 	}
 	refreshSummary();
 }
 
 void MultistreamDock::enterUploadSpeed()
 {
-	bool ok = false;
-	const double v = QInputDialog::getDouble(this, QStringLiteral("Enter my upload speed"),
-						 QStringLiteral("Your upload speed in Mbps (from any speed-test website):"),
-						 globals.uploadMbps > 0 ? globals.uploadMbps : 20.0, 0.5, 100000.0, 1, &ok);
-	if (!ok)
+	// A heap, tracked QInputDialog (the static getDouble is an exec loop shutdown could not end).
+	QPointer<QInputDialog> dlg(new QInputDialog(this));
+	const auto cleanup = qScopeGuard([&] { delete dlg.data(); });
+	dlg->setWindowTitle(QStringLiteral("Enter my upload speed"));
+	dlg->setLabelText(QStringLiteral("Your upload speed in Mbps (from any speed-test website):"));
+	dlg->setInputMode(QInputDialog::DoubleInput);
+	dlg->setDoubleDecimals(1);
+	dlg->setDoubleRange(0.5, 100000.0);
+	dlg->setDoubleValue(globals.uploadMbps > 0 ? globals.uploadMbps : 20.0);
+	if (execModal(dlg) != QDialog::Accepted)
 		return;
+	const double v = dlg->doubleValue();
 	globals.uploadMbps = v;
 	globals.uploadSource = QStringLiteral("manual");
 	globals.uploadWhen = QDateTime::currentDateTime().toString(Qt::ISODate);
@@ -1412,10 +1396,8 @@ std::vector<ImportCandidate> MultistreamDock::findImportCandidates()
 				out.push_back(std::move(c));
 	}
 	// Aitum: plugin_config/aitum-multistream/config.json, keyed by profile name.
-	if (char *ours = obs_module_config_path("")) {
-		QDir dir(QString::fromUtf8(ours)); // .../plugin_config/rws-multistream/
-		bfree(ours);
-		dir.cdUp();
+	if (const std::string root = kitpaths::pluginConfigRoot(); !root.empty()) {
+		const QDir dir(QString::fromUtf8(root.c_str())); // .../plugin_config/
 		const QByteArray json = readFile(dir.filePath(QStringLiteral("aitum-multistream/config.json")));
 		if (!json.isEmpty()) {
 			char *name = obs_frontend_get_current_profile();
@@ -1432,15 +1414,16 @@ void MultistreamDock::importDestinations()
 {
 	auto candidates = findImportCandidates();
 	if (candidates.empty()) {
-		QMessageBox::information(this, QStringLiteral("Import destinations"),
-					 QStringLiteral("Nothing to import: no obs-multi-rtmp or Aitum Multistream "
-							"destinations are saved for this OBS profile."));
+		messageBox(QMessageBox::Information, QStringLiteral("Import destinations"),
+			   QStringLiteral("Nothing to import: no obs-multi-rtmp or Aitum Multistream "
+					  "destinations are saved for this OBS profile."));
 		return;
 	}
-	ImportDialog dlg(std::move(candidates), existingServerKeys(), this);
-	if (dlg.exec() != QDialog::Accepted)
+	QPointer<ImportDialog> dlg(new ImportDialog(std::move(candidates), existingServerKeys(), this));
+	const auto cleanup = qScopeGuard([&] { delete dlg.data(); });
+	if (execModal(dlg) != QDialog::Accepted)
 		return;
-	addImported(dlg.selected());
+	addImported(dlg->selected());
 }
 
 void MultistreamDock::addImported(const std::vector<ImportCandidate> &chosen)
@@ -1628,6 +1611,60 @@ std::vector<MultistreamDock::DestinationInfo> MultistreamDock::snapshot()
 	return out;
 }
 
+std::optional<std::vector<MultistreamDock::DestinationInfo>> MultistreamDock::destinationsNow()
+{
+	if (closing)
+		return std::nullopt;
+	return snapshot();
+}
+
+std::vector<MultistreamDock::OutputSnapshot> MultistreamDock::outputSnapshots()
+{
+	std::vector<OutputSnapshot> out;
+	if (closing)
+		return out;
+	for (const auto &d : cfg.destinations) {
+		OutputSnapshot s;
+		s.id = d.id;
+		s.name = d.name;
+		// A destination switched off is Off even while its output is still winding down (Stopping): the user's
+		// decision comes first, so the Network light drops it at the very next tick.
+		if (d.enabled) {
+			const QString st = info(d).state;
+			if (st == QStringLiteral("live"))
+				s.state = OutputSnapshot::State::Live;
+			else if (st == QStringLiteral("reconnecting"))
+				s.state = OutputSnapshot::State::Reconnecting;
+			else if (st == QStringLiteral("off") || st == QStringLiteral("ready"))
+				s.state = OutputSnapshot::State::Off;
+			else
+				s.state = OutputSnapshot::State::Other; // connecting, retrying, paused, waiting, failed
+		}
+		auto rit = runners.find(d.id);
+		if (s.state != OutputSnapshot::State::Off && rit != runners.end() && rit->second) {
+			const OutputRunner *r = rit->second.get();
+			s.dropped = (uint64_t)qMax(0, r->droppedFrames());
+			s.total = (uint64_t)qMax(0, r->totalFrames());
+			s.serial = r->outputSerial();
+		}
+		out.push_back(std::move(s));
+	}
+	return out;
+}
+
+void MultistreamDock::setDropFigures(const std::map<QString, double> &pctById)
+{
+	if (closing || pctById == dropFigures_)
+		return;
+	dropFigures_ = pctById;
+	QString what;
+	for (const auto &[id, pct] : pctById)
+		if (const Destination *d = find(id))
+			what += QStringLiteral("%1%2=%3").arg(what.isEmpty() ? QString() : QStringLiteral(", "), d->name).arg(pct, 0, 'f', 1);
+	obs_log(LOG_INFO, "drop badge: %s", what.isEmpty() ? "none" : what.toUtf8().constData());
+	refreshAll();
+}
+
 bool MultistreamDock::setEnabledByKey(const QString &key, int mode, DestinationInfo *out)
 {
 	Destination *match = find(key);
@@ -1749,8 +1786,41 @@ void MultistreamDock::showReport()
 {
 	if (!report.hasResult())
 		return;
-	ReportDialog dlg(report, reportsDir, this);
-	dlg.exec();
+	QPointer<ReportDialog> dlg(new ReportDialog(report, reportsDir, this));
+	const auto cleanup = qScopeGuard([&] { delete dlg.data(); });
+	execModal(dlg);
+}
+
+// Heap + QPointer + rejected by shutdown(), like Pre-Flight's dialogs: a dialog on the stack whose parent is
+// (inside) the OBS main window would be destroyed twice if OBS tears the window down while it is open. Returns
+// the dialog result, or -1 when the dialog was destroyed under us (the caller must then return at once).
+int MultistreamDock::execModal(QDialog *dlg)
+{
+	if (!dlg || closing)
+		return -1;
+	QPointer<QDialog> me(dlg);
+	modals_.push_back(me);
+	dlg->exec();
+	const bool alive = !me.isNull();
+	const int rc = alive ? dlg->result() : -1;
+	modals_.erase(std::remove_if(modals_.begin(), modals_.end(),
+				     [&](const QPointer<QDialog> &p) { return p.isNull() || p == me; }),
+		      modals_.end());
+	return (!alive || closing) ? -1 : rc;
+}
+
+QMessageBox::StandardButton MultistreamDock::messageBox(QMessageBox::Icon icon, const QString &title,
+							const QString &text, QMessageBox::StandardButtons buttons)
+{
+	if (closing)
+		return QMessageBox::NoButton;
+	QPointer<QMessageBox> box(new QMessageBox(icon, title, text, buttons, this));
+	const int rc = execModal(box);
+	QMessageBox::StandardButton clicked = QMessageBox::NoButton;
+	if (rc >= 0 && box)
+		clicked = box->standardButton(box->clickedButton());
+	delete box.data();
+	return clicked;
 }
 
 // ---- platform limits -------------------------------------------------------------

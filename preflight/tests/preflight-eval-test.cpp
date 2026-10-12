@@ -2,6 +2,7 @@
 // No framework: exits non-zero on failure.
 #include "preflight-eval.hpp"
 
+#include <cmath>
 #include <cstdio>
 #include <limits>
 
@@ -579,6 +580,93 @@ int main()
 		CHECK(d.cautions == QStringList({"Mic test"}), "Amber only: caution listed");
 		d = decideGoLive(QVector<CheckResult>());
 		CHECK(d.allowedWithoutAsking && d.reds.isEmpty() && d.cautions.isEmpty(), "empty result set allowed");
+	}
+
+	// --- Mic test numbers: Loudest (max peak) and Typical (power mean of magnitude above the silence floor) ---
+	{
+		const float inf = std::numeric_limits<float>::infinity();
+		auto approx = [](float a, float b) { return std::fabs(a - b) < 0.005f; };
+
+		// powerMeanDb
+		CHECK(approx(powerMeanDb({-20.0f, -20.0f, -20.0f}, kMicDigitalSilenceDb), -20.0f), "power mean of equal levels is that level");
+		CHECK(approx(powerMeanDb({-20.0f, -30.0f}, kMicDigitalSilenceDb), -22.596f),
+		      "power mean of -20 and -30 dB = 10*log10((0.01+0.001)/2) = -22.60 (a dB average would say -25)");
+		CHECK(approx(powerMeanDb({-10.0f, -40.0f}, kMicDigitalSilenceDb), -13.006f), "power mean of -10 and -40 dB = -13.01");
+		CHECK(approx(powerMeanDb({-10.0f, -90.0f, -200.0f, -inf}, kMicDigitalSilenceDb), -10.0f),
+		      "levels at or below the floor (-90, -200, -inf) are left out, not averaged in");
+		CHECK(powerMeanDb({}, kMicDigitalSilenceDb) == -inf, "empty input -> -inf");
+		CHECK(powerMeanDb({-95.0f, -100.0f, -90.0f}, kMicDigitalSilenceDb) == -inf, "everything at or below the floor -> -inf");
+		CHECK(approx(powerMeanDb({std::numeric_limits<float>::quiet_NaN(), -20.0f}, kMicDigitalSilenceDb), -20.0f), "NaN is skipped");
+
+		// formatDb
+		CHECK(formatDb(-8.24f) == "-8.2" && formatDb(-8.26f) == "-8.3", "one decimal, rounded (-8.24 -> -8.2, -8.26 -> -8.3)");
+		CHECK(formatDb(-8.25f) == "-8.3" && formatDb(8.25f) == "8.3", "a tie rounds away from zero (exactly representable .25)");
+		CHECK(formatDb(0.0f) == "0.0" && formatDb(-0.04f) == "0.0", "zero prints 0.0, never -0.0");
+		CHECK(formatDb(-21.5f) == "-21.5" && formatDb(-100.0f) == "-100.0", "plain values keep one decimal");
+		CHECK(formatDb(-inf) == "-inf" && formatDb(-200.0f) == "-inf" && formatDb(-250.0f) == "-inf", "-inf and the -200 dB clamp print -inf");
+		CHECK(formatDb(std::numeric_limits<float>::quiet_NaN()) == "-inf", "NaN prints -inf");
+		CHECK(formatDb(-199.9f) == "-199.9", "just above the clamp is still a number");
+
+		// MicTestAnalyzer::numbers
+		MicTestAnalyzer a;
+		a.start(0);
+		CHECK(!a.numbers().valid, "no samples: nothing to show");
+
+		a.start(1000);
+		a.add(1200, -8.24f, -21.5f);
+		MicNumbers n = a.numbers();
+		CHECK(n.valid && formatDb(n.loudestDb) == "-8.2" && formatDb(n.typicalDb) == "-21.5", "single sample: Loudest -8.2, Typical -21.5");
+
+		a.start(0);
+		a.add(100, -55.0f, -60.0f);
+		a.add(900, -52.0f, -58.0f);
+		a.add(2500, -12.0f, -20.0f);
+		a.add(3500, -20.0f, -30.0f);
+		n = a.numbers();
+		CHECK(n.valid && approx(n.loudestDb, -12.0f), "mixed: Loudest is the max peak (-12)");
+		// powers: 1e-6, 1.585e-6, 1e-2, 1e-3 -> mean 2.7507e-3 -> -25.606 dB
+		CHECK(approx(n.typicalDb, -25.606f), "mixed: Typical is the power mean of the four magnitudes (-25.61)");
+
+		a.start(0); // silence: the collector clamps -inf to -200
+		a.add(100, -200.0f, -200.0f);
+		a.add(600, -200.0f, -200.0f);
+		n = a.numbers();
+		CHECK(n.valid && n.loudestDb == -200.0f && n.typicalDb == -inf, "silence: valid, Loudest -200 (prints -inf), Typical -inf");
+		CHECK(formatDb(n.loudestDb) == "-inf" && formatDb(n.typicalDb) == "-inf", "silence prints -inf for both");
+		CHECK(a.finish(true) == MicTestStatus::NoAudio, "silence still decides NoAudio, as before");
+
+		a.start(0); // heard something, but every magnitude below the silence floor
+		a.add(100, -60.0f, -95.0f);
+		a.add(600, -50.0f, -100.0f);
+		n = a.numbers();
+		CHECK(n.valid && approx(n.loudestDb, -50.0f) && n.typicalDb == -inf, "all magnitudes below the floor: Loudest real, Typical -inf");
+
+		a.start(0); // magnitude-less add() (the old two-argument call): Loudest works, Typical has nothing
+		a.add(100, -30.0f);
+		a.add(600, -25.0f);
+		n = a.numbers();
+		CHECK(n.valid && approx(n.loudestDb, -25.0f) && n.typicalDb == -inf, "peaks only: Loudest -25, Typical -inf");
+
+		a.start(1000); // a sine of -20 dBFS peak: every callback reads peak -20.0 and magnitude -20 - 3.0103 = -23.0103
+		for (int i = 0; i < 100; ++i)
+			a.add(1000 + 40 * i, -20.0f, -23.0103f);
+		a.add(1000 + 5100, -5.0f, -5.0f); // outside the 5 s window: ignored
+		a.add(500, -4.0f, -4.0f);          // before the start: ignored
+		n = a.numbers();
+		CHECK(formatDb(n.loudestDb) == "-20.0" && formatDb(n.typicalDb) == "-23.0", "a -20 dBFS sine: Loudest -20.0, Typical -23.0 (peak - 3.01 dB)");
+		CHECK(a.finish(true) == MicTestStatus::TooQuiet, "...and that steady tone still decides as before (no speech above a floor)");
+
+		// Pass / too-quiet is untouched by the magnitudes: the same peaks decide the same way with or without them.
+		MicTestAnalyzer b, c;
+		b.start(0);
+		c.start(0);
+		const qint64 ts[] = {200, 1800, 2500, 3500};
+		const float ps[] = {-55.0f, -52.0f, -12.0f, -20.0f};
+		for (int i = 0; i < 4; ++i) {
+			b.add(ts[i], ps[i]);
+			c.add(ts[i], ps[i], -40.0f);
+		}
+		CHECK(b.finish(true) == c.finish(true) && c.finish(true) == MicTestStatus::Passed, "magnitudes do not change Passed");
 	}
 
 	std::printf("%s (%d failure%s)\n", failures ? "FAILED" : "ALL PASSED", failures, failures == 1 ? "" : "s");

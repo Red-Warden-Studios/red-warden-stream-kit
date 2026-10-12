@@ -11,7 +11,9 @@ SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <obs-frontend-api.h>
 
+#include <QDialog>
 #include <QMap>
+#include <QPointer>
 #include <QString>
 #include <QStringList>
 #include <QVector>
@@ -36,20 +38,40 @@ public:
 	// Called at OBS_FRONTEND_EVENT_EXIT: stop the update worker, the controller and its timers.
 	void shutdown();
 
+	// ---- host (Stream Kit dock) interface ----
+	// The Kit's Reset: clear check results (ticks, mic-test result) and run the checks again.
+	void resetForNewStream();
+	// Shows the "Done" button next to Settings (only when a host can act on it).
+	void setDoneVisible(bool visible);
+	// Where the Multistream check reads the destinations from (the Kit wires it when Multistream is loaded; never set =
+	// "Multistream wasn't found"). See MultistreamProbe.
+	void setMultistreamSource(preflight::MultistreamProbe::Source src);
+	// Host only: the "Levels" button in the button row (shown only when the host has Levels to open, i.e.
+	// In-Flight is on). The host opens/closes its Levels section when it is clicked.
+	void setLevelsAvailable(bool available);
+	bool levelsButtonVisible() const;
+
+signals:
+	// "Done" pressed: the host moves on to In-Flight.
+	void doneRequested();
+	void levelsRequested();
+	// The Loudest / Typical line under the Mic test row was shown (true) or cleared (false). Test hooks of the host
+	// use it to photograph the row.
+	void micNumbersShown(bool shown);
+
 private:
 	void showUpdate(const updatecheck::Manifest &m);
-	void scheduleUpdateCheck();
-	bool updateCheckScheduled = false;
 	void applyResults(const QVector<preflight::CheckResult> &results);
 	void syncCustomItems();
 	void updateMicButton();
+	void applyMicNumbers();
 	void updateLive();
 	void openSettings();
 	void goLive();
 	void installTestHooks();
 	QWidget *mainWindow() const;
 
-	PreflightController *controller = nullptr;
+	QPointer<PreflightController> controller; // child QObject; a QPointer so shutdown never touches a deleted one
 	QLabel *updateNote = nullptr;
 	QFrame *banner = nullptr;
 	QLabel *bannerLabel = nullptr;
@@ -58,6 +80,9 @@ private:
 	QVBoxLayout *rowsLayout = nullptr;
 	QPushButton *goBtn = nullptr;
 	QPushButton *gearBtn = nullptr;
+	QPushButton *doneBtn = nullptr;
+	QPushButton *levelsBtn = nullptr;
+	QPointer<QDialog> modal_; // the open settings dialog / go-live box, if any (rejected by shutdown)
 	QMap<int, PreflightCheckRow *> rows;
 	QVector<int> order;
 	QVector<bool> ticks;
@@ -66,6 +91,7 @@ private:
 	updatecheck::Manifest pendingUpdate;
 	bool checkUpdates = true;
 	bool closing = false;
+	bool shutDown_ = false; // shutdown() has run (EXIT or the destructor): a no-op from then on
 	bool micRunning = false;
 	bool live = false;
 	bool startedFromDock = false;

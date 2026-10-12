@@ -1,14 +1,17 @@
 <#
-  Red Warden Pre-Flight load test.
+  Red Warden Pre-Flight load test, run against the ONE Red Warden Stream Kit DLL (rws-stream-kit.dll).
 
   Touches none of your real OBS. It:
-    1. makes a portable OBS copy in .testbed\obs (first run only) by copying the
-       Multistream testbed's portable OBS,
-    2. installs the freshly built rws-preflight.dll (+ .pdb) and locale into it,
-    3. launches that portable OBS with a throwaway profile/collection "PreflightTest",
-    4. waits, reads the newest log, checks for the "[rws-preflight] loaded" line and the dock id,
-    5. stops ONLY the OBS process it started (captured PID).
-  Result: .testbed\run-load.txt (PASS / FAIL), exit code 0 / 1.
+    1. uses the Kit testbed's portable OBS (plugin\.testbed\obs of the Kit; first run copies one),
+    2. installs exactly ONE plugin DLL, rws-stream-kit.dll (+ pdb + locale); the old rws-multistream /
+       rws-preflight / rws-inflight DLLs and data folders are removed from that copy first,
+    3. seeds pre-existing settings (shared update preference OFF, Pre-Flight and In-Flight settings with
+       recognisable values) and launches the portable OBS HIDDEN with a throwaway profile "PreflightTest",
+    4. waits, reads the newest log, checks the "[rws-preflight] loaded version" line and the dock id,
+    5. closes OBS with WM_CLOSE (the File > Exit path), then checks the Kit load log (one module, each of the
+       three tools once, version 1.1.0, three dock ids in the saved dock state, no "could not register the dock"),
+       the update notice, and that the seeded settings files survived.
+  Stops ONLY the OBS process it started (captured PID). Output: console (run-all captures it), "RESULT: PASS|FAIL".
 #>
 param(
   [string]$Config = "RelWithDebInfo",
@@ -16,44 +19,33 @@ param(
 )
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
-$bed  = Join-Path $root ".testbed"
-$obs  = Join-Path $bed "obs"
-$cfg  = Join-Path $obs "config\obs-studio"
+$kitTools = Join-Path (Split-Path -Parent $root) "plugin\tools"                                          # published layout: <repo>\plugin
+if (!(Test-Path $kitTools)) { $kitTools = Join-Path (Split-Path -Parent $root) "red-warden-stream-kit\plugin\tools" }   # development layout
+. (Join-Path $kitTools "kit-testbed.ps1")
+$kit  = Get-KitTestbed $Config
+$bed  = $kit.Bed
+$obs  = $kit.Obs
+$cfg  = $kit.Cfg
 $prof = Join-Path $cfg "basic\profiles\PreflightTest"
-$dll  = Join-Path $root "build_x64\$Config\rws-preflight.dll"
-$pdb  = Join-Path $root "build_x64\$Config\rws-preflight.pdb"
-$src  = Join-Path (Split-Path -Parent $root) "red-warden-multistream\.testbed\obs"
-$result = Join-Path $bed "run-load.txt"
-New-Item -ItemType Directory -Force $bed | Out-Null
-Remove-Item $result -ErrorAction SilentlyContinue
 
 function Finish([bool]$ok, [string[]]$lines) {
-  $head = if ($ok) { "PASS" } else { "FAIL" }
-  (@($head) + $lines) | Set-Content $result
+  $lines | ForEach-Object { Write-Host $_ }
+  if ($ok) { Write-Host "RESULT: PASS" } else { Write-Host "RESULT: FAIL" }
   exit $(if ($ok) { 0 } else { 1 })
 }
+trap { Write-Host "FAIL: $_"; Write-Host "RESULT: FAIL"; exit 1 }
 
-if (!(Test-Path $dll)) { Finish $false @("rws-preflight.dll not found: $dll") }
+if (!(Test-Path $kit.Dll)) { Finish $false @("rws-stream-kit.dll not found: $($kit.Dll)") }
 
-# 1. portable OBS (first run only)
-if (!(Test-Path (Join-Path $obs "bin\64bit\obs64.exe"))) {
-  if (!(Test-Path (Join-Path $src "bin\64bit\obs64.exe"))) { Finish $false @("no source portable OBS at $src") }
-  robocopy $src $obs /E /MT:16 /NFL /NDL /NJH /NJS /NP | Out-Null
-  if ($LASTEXITCODE -ge 8) { Finish $false @("robocopy of portable OBS failed, exit $LASTEXITCODE") }
-  New-Item -ItemType File -Force (Join-Path $obs "portable_mode.txt") | Out-Null
-}
+# 1. portable OBS (first run only); the previous harness's OBS may still be shutting down: wait, never kill
+Initialize-KitPortableObs $obs
+if (!(Wait-KitObsExit (Join-Path $obs "bin\64bit\obs64.exe") 30)) { Finish $false @("a testbed obs64.exe ($obs) is still running; not touching it") }
 
-# 2. install plugin (and make sure Multistream is not in this copy)
-$pbin = Join-Path $obs "obs-plugins\64bit"
-$pdat = Join-Path $obs "data\obs-plugins\rws-preflight\locale"
-Remove-Item (Join-Path $pbin "rws-multistream.*") -Force -ErrorAction SilentlyContinue
-New-Item -ItemType Directory -Force $pdat | Out-Null
-Copy-Item $dll $pbin -Force
-if (Test-Path $pdb) { Copy-Item $pdb $pbin -Force }
-Copy-Item (Join-Path $root "data\locale\en-US.ini") $pdat -Force
+# 2. exactly ONE plugin DLL
+Install-KitPlugin $kit | ForEach-Object { Write-Host $_ }
 
 # fresh throwaway config every run
-if (Test-Path $cfg) { Remove-Item -Recurse -Force $cfg }
+Clear-KitConfig $cfg
 New-Item -ItemType Directory -Force $prof | Out-Null
 New-Item -ItemType Directory -Force (Join-Path $cfg "basic\scenes") | Out-Null
 
@@ -107,52 +99,64 @@ Set-Content (Join-Path $cfg "basic\scenes\PreflightTest.json") @'
  ]}
 '@ -Encoding UTF8
 
-# 3. run OBS (test env var keeps the update check off the network)
+# Multistream profile config with two ENABLED destinations at an unreachable local URL (never started): Pre-Flight's probe must
+# report their count directly from Multistream's dock, in-process ("multistream probe: ok (2 enabled)"), i.e. real data came back, not just a response.
+Set-Content (Join-Path $prof "rws-multistream.json") @"
+{"version":2,"destinations":[
+ {"id":"00000000-beac-0000-0000-0000000000a1","name":"Load Alpha","platform":"custom","server":"rtmp://127.0.0.1:1/x","enabled":true,"encoder":{"shared":true,"encoder_id":"","video_bitrate":2500,"audio_bitrate":0,"audio_track":-1,"width":0,"height":0},"hotkey":[]},
+ {"id":"00000000-beac-0000-0000-0000000000a2","name":"Load Bravo","platform":"custom","server":"rtmp://127.0.0.1:1/x","enabled":true,"encoder":{"shared":true,"encoder_id":"","video_bitrate":2500,"audio_bitrate":0,"audio_track":-1,"width":0,"height":0},"hotkey":[]}
+]}
+"@ -Encoding UTF8
+# Kit: pre-existing settings of an upgrading user (shared update preference OFF + Pre-Flight + In-Flight files)
+Write-KitSeedSettings $cfg
+
+# 3. run OBS hidden (test env var keeps the update check off the network)
 $env:RWS_PREFLIGHT_TEST = "1"
-$exeDir = Join-Path $obs "bin\64bit"
-$proc = Start-Process (Join-Path $exeDir "obs64.exe") -WorkingDirectory $exeDir -PassThru -ArgumentList @(
-  "--portable", "--multi", "--profile", "PreflightTest", "--collection", "PreflightTest",
-  "--disable-updater", "--disable-missing-files-check")
+$proc = Start-KitObs $obs "PreflightTest" "PreflightTest"
 $obsPid = $proc.Id
 $text = ""
 $log = $null
 $alive = $false
 $failure = $null
+$visible = @()
 try {
   Start-Sleep -Seconds $Seconds
-
-  # 4. read the newest log (OBS holds it open, so open with sharing)
-  $logDir = Join-Path $cfg "logs"
-  $log = Get-ChildItem $logDir -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
-  if ($log) {
-    $fs = [IO.File]::Open($log.FullName, 'Open', 'Read', 'ReadWrite')
-    try {
-      $sr = New-Object IO.StreamReader($fs)
-      $text = $sr.ReadToEnd()
-    } finally {
-      $fs.Close()
-    }
-  }
+  $log = Get-KitLogFile $cfg
+  $text = Get-KitLogText $cfg
   $alive = -not $proc.HasExited
 } catch {
   $failure = "$_"
 } finally {
-  # 5. stop ONLY the captured PID, even if reading the log threw (never by image name)
-  try {
-    $p = Get-Process -Id $obsPid -ErrorAction SilentlyContinue
-    if ($p -and -not $p.HasExited) {
-      [void]$p.CloseMainWindow()
-      if (!$p.WaitForExit(15000)) { Stop-Process -Id $obsPid -Force -ErrorAction SilentlyContinue }
-    }
-  } catch { }
+  # 5. close the normal way; only the captured PID is ever stopped
+  $closed = $false
+  try { $closed = Close-KitObs $proc 15 } catch { }
   Remove-Item Env:\RWS_PREFLIGHT_TEST -ErrorAction SilentlyContinue
 }
+[void](Wait-KitObsExit (Join-Path $obs "bin\64bit\obs64.exe") 20)
+$final = Get-KitLogText $cfg
 
 $lines = @("pid=$obsPid still_running_at_check=$alive", "log=$(if ($log) { $log.FullName } else { 'NONE' })")
 if ($failure) { $lines += "error during check: $failure" }
 $loaded = $text -match '\[rws-preflight\] loaded version'
-$dock = $text -match 'rws-preflight-dock'
+$dock = $text -match '\[rws-stream-kit\] dock registered \(id rws-stream-kit\)'
 $lines += "loaded_line=$loaded dock_id=$dock"
+
+# Kit assertions (new with the merge)
+$visible = @(Stop-KitWindowWatch)   # background sampler (every 250 ms from OBS start through exit)
+$kc = @()
+$kc += Test-KitLoadLog $final $cfg @("multistream", "preflight", "inflight")
+$kc += Test-KitUpdateNotice $final
+# Pre-Flight's probe asks Multistream's dock directly (in-process, no obs-websocket); Multistream is now in the same DLL, so it is found
+# (pre-merge, with no Multistream installed, the log said "multistream probe: not found" for the whole run)
+$kc += New-KitCheck ($final -match '\[rws-preflight\] multistream probe: ok \(2 enabled\)') "Pre-Flight's Multistream probe returns the seeded destination data: 'multistream probe: ok (2 enabled)'"
+$kc += Test-KitSeedLoaded $final @("preflight", "inflight")
+$kc += Test-KitUpdateSource
+$kc += Test-KitSeedSettings $cfg
+$kc += Test-KitHidden $visible
+$kc += Test-KitClosePath
+$kc += New-KitCheck ($proc.ExitCode -eq 0 -and $closed) "OBS exited cleanly on WM_CLOSE (exit code $($proc.ExitCode))"
+$lines += "--- Kit checks (one DLL, three tools, update notice, seeded settings) ---"
+$lines += Get-KitCheckLines $kc
 $lines += "--- plugin lines ---"
-$lines += @($text -split "`r?`n" | Where-Object { $_ -match 'rws-preflight|Red Warden Pre' })
-Finish ($loaded -and $dock -and $alive -and -not $failure) $lines
+$lines += @($final -split "`r?`n" | Where-Object { $_ -match 'rws-preflight|rws-inflight|rws-multistream|Stream Kit|Red Warden' })
+Finish ($loaded -and $dock -and $alive -and -not $failure -and (Test-KitChecksOk $kc)) $lines

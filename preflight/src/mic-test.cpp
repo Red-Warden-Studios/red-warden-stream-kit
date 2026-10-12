@@ -32,7 +32,7 @@ qint64 nowMs()
 // callback can still be running once removal returns.
 struct MicTest::Collector {
 	std::mutex m;
-	std::vector<std::pair<qint64, float>> samples;
+	std::vector<MicTest::Sample> samples;
 };
 
 MicTest::MicTest(QObject *parent) : QObject(parent) {}
@@ -44,25 +44,30 @@ MicTest::~MicTest()
 
 // Audio thread. Uses the post-fader peak (what reaches the stream: a muted or faded-down mic reads
 // quiet here, which is exactly what we want to catch), not input_peak (pre-fader).
-// Values are dBFS; unused channel slots read -inf.
-void MicTest::onVolmeter(void *param, const float[], const float peak[], const float[])
+// Values are dBFS; unused channel slots read -inf. The magnitude (the volmeter's RMS over the callback window,
+// post-fader like the peak) is collected too: the loudest channel's, the same way the peak is, for the "Typical"
+// number.
+void MicTest::onVolmeter(void *param, const float magnitude[], const float peak[], const float[])
 {
 	auto *c = static_cast<Collector *>(param);
-	float best = -200.0f;
-	for (int i = 0; i < MAX_AUDIO_CHANNELS; ++i) {
-		float v = peak[i];
-		if (std::isnan(v))
-			continue;
-		if (v < -200.0f) // also catches -inf
-			v = -200.0f;
-		if (v > 0.0f)
-			v = 0.0f;
-		best = std::max(best, v);
-	}
-	const qint64 t = nowMs();
+	auto loudest = [](const float v[]) {
+		float best = -200.0f;
+		for (int i = 0; i < MAX_AUDIO_CHANNELS; ++i) {
+			float x = v[i];
+			if (std::isnan(x))
+				continue;
+			if (x < -200.0f) // also catches -inf
+				x = -200.0f;
+			if (x > 0.0f)
+				x = 0.0f;
+			best = std::max(best, x);
+		}
+		return best;
+	};
+	const Sample s{nowMs(), loudest(peak), loudest(magnitude)};
 	std::lock_guard<std::mutex> lk(c->m);
 	if (c->samples.size() < kMaxSamples)
-		c->samples.emplace_back(t, best);
+		c->samples.push_back(s);
 }
 
 bool MicTest::start(const QString &micUuid)
@@ -91,6 +96,7 @@ bool MicTest::start(const QString &micUuid)
 		return false;
 	}
 	last_ = MicTestStatus::NotRun;
+	clearNumbers();
 	const std::uint64_t token = gen_.begin();
 	// Context object = this, so the callback dies with us; the token makes a late fire from a
 	// cancelled/superseded run harmless.
@@ -99,7 +105,15 @@ bool MicTest::start(const QString &micUuid)
 	return true;
 }
 
-void MicTest::teardown(bool *muted, bool *active, std::vector<std::pair<qint64, float>> *samples)
+void MicTest::clearNumbers()
+{
+	if (numbers_ == MicNumbers())
+		return;
+	numbers_ = MicNumbers();
+	emit numbersChanged();
+}
+
+void MicTest::teardown(bool *muted, bool *active, std::vector<Sample> *samples)
 {
 	if (vol_) {
 		obs_volmeter_remove_callback(vol_, &MicTest::onVolmeter, collector_.get());
@@ -130,14 +144,15 @@ void MicTest::onTimeout(std::uint64_t token)
 		return; // cancelled, expired or superseded since this timer was armed: publish nothing
 	bool muted = false;
 	bool active = false;
-	std::vector<std::pair<qint64, float>> samples;
+	std::vector<Sample> samples;
 	teardown(&muted, &active, &samples);
 
 	MicTestAnalyzer an;
 	an.start(startMs_);
 	for (const auto &s : samples)
-		an.add(s.first, s.second);
+		an.add(s.t, s.peak, s.mag);
 	const MicTestStatus result = muted ? MicTestStatus::Muted : an.finish(active);
+	const MicNumbers nums = muted ? MicNumbers() : an.numbers();
 
 	// One line per finished test, numbers only (never audio). obs_log adds the "[rws-preflight]" prefix.
 	const auto sum = an.summary();
@@ -164,8 +179,15 @@ void MicTest::onTimeout(std::uint64_t token)
 		snprintf(oldBuf, sizeof oldBuf, "%.1f", static_cast<double>(*sum.oldFloorDb));
 	obs_log(LOG_INFO, "mic test: samples=%d max=%s floor_p10=%s old_floor=%s result=%s", sum.count, maxBuf,
 		floorBuf, oldBuf, name);
+	if (nums.valid)
+		obs_log(LOG_INFO, "mic test numbers: loudest=%s typical=%s", formatDb(nums.loudestDb).toUtf8().constData(),
+			formatDb(nums.typicalDb).toUtf8().constData());
 
 	last_ = result;
+	if (numbers_ != nums) {
+		numbers_ = nums;
+		emit numbersChanged();
+	}
 	emit runningChanged(false);
 	emit finished(result);
 }
@@ -175,6 +197,7 @@ void MicTest::cancel()
 	const bool was = gen_.cancel(); // invalidates the pending finisher first
 	teardown(nullptr, nullptr, nullptr);
 	last_ = MicTestStatus::NotRun;
+	clearNumbers();
 	if (was)
 		emit runningChanged(false);
 }
@@ -183,8 +206,10 @@ void MicTest::expire()
 {
 	if (gen_.running())
 		cancel(); // a result for a test that started before the expiry must never appear later
-	else
+	else {
 		last_ = MicTestStatus::NotRun;
+		clearNumbers();
+	}
 }
 
 } // namespace preflight

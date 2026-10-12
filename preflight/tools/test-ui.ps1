@@ -15,18 +15,20 @@ param(
 )
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
-$bed  = Join-Path $root ".testbed"
-$obs  = Join-Path $bed "obs"
-$cfg  = Join-Path $obs "config\obs-studio"
+$kitTools = Join-Path (Split-Path -Parent $root) "plugin\tools"                                          # published layout: <repo>\plugin
+if (!(Test-Path $kitTools)) { $kitTools = Join-Path (Split-Path -Parent $root) "red-warden-stream-kit\plugin\tools" }   # development layout
+. (Join-Path $kitTools "kit-testbed.ps1")
+$kit  = Get-KitTestbed $Config
+$bed  = $kit.Bed
+$obs  = $kit.Obs
+$cfg  = $kit.Cfg
 $prof = Join-Path $cfg "basic\profiles\PreflightState"
-$dll  = Join-Path $root "build_x64\$Config\rws-preflight.dll"
-$pdb  = Join-Path $root "build_x64\$Config\rws-preflight.pdb"
-$src  = Join-Path (Split-Path -Parent $root) "red-warden-multistream\.testbed\obs"
-$result = Join-Path $bed "run-ui.txt"
+$dll  = $kit.Dll
+$pdb  = $kit.Pdb
 $shotDock = Join-Path $bed "ui-dock.png"
 $shotSet  = Join-Path $bed "ui-settings.png"
 New-Item -ItemType Directory -Force $bed | Out-Null
-Remove-Item $result, $shotDock, $shotSet -ErrorAction SilentlyContinue
+Remove-Item $shotDock, $shotSet -ErrorAction SilentlyContinue
 
 $uStart = "c0000000-0000-0000-0000-000000000001"
 $uOther = "c0000000-0000-0000-0000-000000000002"
@@ -34,29 +36,22 @@ $uMic   = "c0000000-0000-0000-0000-000000000003"
 $uColor = "c0000000-0000-0000-0000-000000000004"
 
 function Finish([bool]$ok, [string[]]$lines) {
-  $head = if ($ok) { "PASS" } else { "FAIL" }
-  (@($head) + $lines) | Set-Content $result
+  $lines | ForEach-Object { Write-Host $_ }
+  if ($ok) { Write-Host "RESULT: PASS" } else { Write-Host "RESULT: FAIL" }
   exit $(if ($ok) { 0 } else { 1 })
 }
+trap { Write-Host "FAIL: $_"; Write-Host "RESULT: FAIL"; exit 1 }
 
-if (!(Test-Path $dll)) { Finish $false @("rws-preflight.dll not found: $dll") }
+if (!(Test-Path $dll)) { Finish $false @("rws-stream-kit.dll not found: $dll") }
 
-if (!(Test-Path (Join-Path $obs "bin\64bit\obs64.exe"))) {
-  if (!(Test-Path (Join-Path $src "bin\64bit\obs64.exe"))) { Finish $false @("no source portable OBS at $src") }
-  robocopy $src $obs /E /MT:16 /NFL /NDL /NJH /NJS /NP | Out-Null
-  if ($LASTEXITCODE -ge 8) { Finish $false @("robocopy of portable OBS failed, exit $LASTEXITCODE") }
-  New-Item -ItemType File -Force (Join-Path $obs "portable_mode.txt") | Out-Null
-}
+# 1+2. portable OBS, and exactly ONE plugin DLL (Kit)
+Initialize-KitPortableObs $obs
+# The previous harness's OBS may still be shutting down: wait for it, never kill it.
+if (!(Wait-KitObsExit (Join-Path $obs "bin\64bit\obs64.exe") 30)) { Finish $false @("a testbed obs64.exe ($obs) is still running; not touching it") }
+# exactly ONE plugin DLL: rws-stream-kit.dll (+pdb) and its locale; the old standalone DLLs and data folders are removed first
+Install-KitPlugin $kit | ForEach-Object { Write-Host $_ }
 
-$pbin = Join-Path $obs "obs-plugins\64bit"
-$pdat = Join-Path $obs "data\obs-plugins\rws-preflight\locale"
-Remove-Item (Join-Path $pbin "rws-multistream.*") -Force -ErrorAction SilentlyContinue
-New-Item -ItemType Directory -Force $pdat | Out-Null
-Copy-Item $dll $pbin -Force
-if (Test-Path $pdb) { Copy-Item $pdb $pbin -Force }
-Copy-Item (Join-Path $root "data\locale\en-US.ini") $pdat -Force
-
-if (Test-Path $cfg) { Remove-Item -Recurse -Force $cfg }
+Clear-KitConfig $cfg
 New-Item -ItemType Directory -Force $prof | Out-Null
 New-Item -ItemType Directory -Force (Join-Path $cfg "basic\scenes") | Out-Null
 
@@ -121,14 +116,13 @@ $plugCfg = Join-Path $cfg "plugin_config\rws-preflight"
 New-Item -ItemType Directory -Force $plugCfg | Out-Null
 $settings = '{"setup_done":true,"use_main_stream":true,"use_multistream":true,"mic_uuid":"' + $uMic + '","start_scene_uuid":"' + $uStart + '","record_intent":false,"check_updates":false,"custom_items":[{"text":"Close the door"},{"text":"Phone on silent"}]}'
 Set-Content (Join-Path $plugCfg "settings.json") $settings -Encoding UTF8
+Write-KitSeedSettings $cfg @("kit", "inflight")
 
 $env:RWS_PREFLIGHT_TEST = "1"
 $env:RWS_PREFLIGHT_TEST_SHOT = $shotDock
 $env:RWS_PREFLIGHT_TEST_SETTINGS_SHOT = $shotSet
-$exeDir = Join-Path $obs "bin\64bit"
-$proc = Start-Process (Join-Path $exeDir "obs64.exe") -WorkingDirectory $exeDir -PassThru -ArgumentList @(
-  "--portable", "--multi", "--profile", "PreflightState", "--collection", "PreflightState",
-  "--disable-updater", "--disable-missing-files-check")
+$proc = Start-KitObs $obs "PreflightState" "PreflightState"
+$visible = @()
 $obsPid = $proc.Id
 $text = ""
 $log = $null
@@ -154,7 +148,7 @@ try {
   try {
     $p = Get-Process -Id $obsPid -ErrorAction SilentlyContinue
     if ($p -and -not $p.HasExited) {
-      [void]$p.CloseMainWindow()
+      [void](Send-KitWmClose $p)
       if (!$p.WaitForExit(15000)) { Stop-Process -Id $obsPid -Force -ErrorAction SilentlyContinue }
     }
   } catch { }
@@ -163,6 +157,25 @@ try {
   Remove-Item Env:\RWS_PREFLIGHT_TEST_SETTINGS_SHOT -ErrorAction SilentlyContinue
 }
 
+# Kit assertions (new with the merge): read after OBS has exited, so the saved dock state is final
+[void](Wait-KitObsExit (Join-Path $obs "bin\64bit\obs64.exe") 20)
+$final = Get-KitLogText $cfg
+$visible = @(Stop-KitWindowWatch)   # background sampler (every 250 ms from OBS start through exit)
+$kc = @()
+$kc += Test-KitLoadLog $final $cfg @("multistream", "preflight", "inflight")
+$kc += Test-KitUpdateNotice $final
+$kc += Test-KitSeedLoaded $final @("preflight", "inflight")
+$kc += Test-KitSeedSettings $cfg @("kit", "inflight")
+# This harness cannot stay fully hidden: its own screenshot hook (RWS_PREFLIGHT_TEST_SHOT, in the plugin) floats and shows the
+# Pre-Flight dock at 360x720 for the grab (a docked widget cannot be resized), and the settings-dialog hook shows the dialog for
+# 1.5 s. The main OBS window is hidden; the only visible top-level window allowed is that floated 'Pre-Flight' dock. Reported.
+# Continuous sampling sees TWO windows from Pre-Flight's own hooks: the floated 'Pre-Flight' dock (40 s) and the 'Pre-Flight settings'
+# dialog (shown ~1.5 s at 5 s). Both come from the plugin's screenshot hooks; nothing else may be visible.
+$kc += Test-KitHidden $visible "'Pre-Flight*"
+$kc += Test-KitClosePath
+$kc += New-KitCheck ($proc.HasExited -and $proc.ExitCode -eq 0) "OBS exited cleanly on WM_CLOSE (exit code $(if ($proc.HasExited) { $proc.ExitCode } else { 'still running' }))"
+$pfs = Read-KitSeedJson $cfg "preflight"
+$kc += New-KitCheck ($pfs -ne $null -and $pfs.setup_done -eq $true -and $pfs.mic_uuid -eq $uMic -and @($pfs.custom_items).Count -eq 2 -and $pfs.custom_items[0].text -eq "Close the door" -and $pfs.custom_items[1].text -eq "Phone on silent") "Pre-Flight settings.json intact after exit (mic and the two custom checklist items)"
 $all = @($text -split "`r?`n")
 $plug = @($all | Where-Object { $_ -match '\[rws-preflight\]' })
 $dockLine = ($plug | Where-Object { $_ -match 'ui-shot saved' }).Count -gt 0
@@ -196,11 +209,13 @@ $checks = @(
   "ui-dock.png size=$($dockWH[0])x$($dockWH[1]) (want about 360x720 logical at 100-200% scaling)=$sizeOk",
   "ui-settings.png bytes=$setSize (want > 2048)"
 )
-$ok = $dockLine -and $setLine -and ($dockSize -gt 2048) -and $sizeOk -and ($setSize -gt 2048) -and $alive -and -not $failure
+$ok = $dockLine -and $setLine -and ($dockSize -gt 2048) -and $sizeOk -and ($setSize -gt 2048) -and $alive -and -not $failure -and (Test-KitChecksOk $kc)
 
 $lines = @("pid=$obsPid still_running_at_check=$alive", "log=$(if ($log) { $log.FullName } else { 'NONE' })")
 if ($failure) { $lines += "error during check: $failure" }
 $lines += $checks
+$lines += "--- Kit checks (one DLL, three tools, update notice, seeded settings, hidden) ---"
+$lines += Get-KitCheckLines $kc
 $lines += "--- rws-preflight log lines ---"
 $lines += $plug
 Finish $ok $lines

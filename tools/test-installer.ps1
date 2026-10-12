@@ -1,22 +1,28 @@
 <#
-  Installer test for the Red Warden Stream Kit. package.ps1 runs it as a required release gate (signed and
-  -NoSign) after staging the DLLs; it can also be run by hand once staging\ exists:
+  Installer test for the Red Warden Stream Kit (one plugin, rws-stream-kit.dll). package.ps1 runs it as a
+  required release gate (signed and -NoSign) after staging the DLL; it can also be run by hand once staging\
+  exists:
 
     powershell -ExecutionPolicy Bypass -File tools\test-installer.ps1
 
-  Compiles a TestRoot build (ISCC /DTestRoot=<kit>\.testbed\root: installs under that folder instead of
-  C:\ProgramData, no admin, its own AppId, a TEST-ONLY legacy AppId, never signs) and checks, silently:
-    - static: the release .iss uses the same legacy AppId as Multistream's own installer
+  Everything happens in a scratch install root (<kit>\.testbed\root) with a TestRoot build (ISCC
+  /DTestRoot=<root>: installs under that folder instead of C:\ProgramData, no admin, its own AppId, a
+  TEST-ONLY legacy AppId, never signs). It never runs a non-TestRoot install, never touches a real OBS or
+  C:\ProgramData\obs-studio (it refuses to start if an obs64.exe is running), and uses no real OBS: the
+  "OBS is running" case runs a copy of powershell.exe named obs64.exe from %TEMP% (captured PID, stopped in finally).
+  Cases:
+    - static: release .iss keeps Multistream's real legacy AppId and the 1.0.1 Kit AppId, has no components,
+      and its [InstallDelete] holds only "files" and "dirifempty" lines (never plugin_config)
     - legacy removal fails closed: a stale legacy entry that cannot be uninstalled aborts, installs nothing
-    - OBS-running block: a PORTABLE OBS (<preflight folder>\.testbed\obs, captured PID, stopped in finally)
-      makes the installer refuse with a non-zero exit and install nothing
-    - component sets: preflight only; both; multistream only removes Pre-Flight's files but not a user's
-      own file in its folder; folders are removed when empty
-    - uninstall leaves no files
-    - legacy removal: a fake "legacy Multistream" installer (test-only AppId) is uninstalled by the Kit
-      installer, its registry entry gone, and the Kit owns the files afterwards
+    - OBS-running block: refuses with a non-zero exit, installs nothing, and leaves an existing install alone
+    - clean install: one plugin (DLL + locale, no pdb), no old folders; uninstall leaves nothing of ours
+    - upgrade from Kit 1.0.1 (a fake 1.0.1 installer with the same AppId, components multistream /
+      preflight / both): old plugin folders gone, new plugin installed, one uninstall entry at the new version
+    - upgrade over a development rws-inflight and an old rws-beacon folder
+    - a file a user dropped into an old plugin folder survives (dirifempty keeps the folder), and survives
+      uninstall; plugin_config sentinels (inside and outside the install root) are untouched by everything
+    - legacy standalone Multistream 1.0.0 (fake, test-only AppId) is uninstalled by the Kit installer
   Writes PASS/FAIL lines and a final RESULT line to .testbed\run-installer.txt.
-  It NEVER runs a non-TestRoot install and never touches a real OBS (it refuses to start if one is running).
 #>
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
@@ -31,32 +37,33 @@ function Check($cond, $msg) {
   if ($cond) { Say "PASS: $msg" } else { Say "FAIL: $msg"; $script:fails++ }
 }
 
-# Plugin folders: multistream\ + preflight\ inside this repo (public layout) when both exist, else the
-# sibling red-warden-multistream + red-warden-preflight folders (development layout).
-if ((Test-Path (Join-Path $root "multistream")) -and (Test-Path (Join-Path $root "preflight"))) {
-  $ms = Join-Path $root "multistream"; $pf = Join-Path $root "preflight"
-} else {
-  $projects = Split-Path -Parent $root
-  $ms = Join-Path $projects "red-warden-multistream"; $pf = Join-Path $projects "red-warden-preflight"
-}
+# Tool folders: the Multistream logo is the installer icon. multistream\ inside this repo (public layout) when it
+# exists, else the sibling red-warden-multistream folder (development layout).
+if (Test-Path (Join-Path $root "multistream")) { $ms = Join-Path $root "multistream" }
+else { $ms = Join-Path (Split-Path -Parent $root) "red-warden-multistream" }
 $msLogo = Join-Path $ms "brand\logo.ico"
+$plugin = Join-Path $root "plugin"
+$version = (Get-Content (Join-Path $plugin "buildspec.json") -Raw | ConvertFrom-Json).version
 $testRoot = Join-Path $bed "root"
+$cfgRoot = Join-Path $bed "fake-obs-config\plugin_config"   # stands in for %APPDATA%\obs-studio\plugin_config
 $stage = Join-Path $root "staging"
 $iscc = Join-Path $env:LOCALAPPDATA "Programs\Inno Setup 6\ISCC.exe"
-$version = "1.0.1"
 $testSetup = Join-Path $bed "RedWardenStreamKit-$version-TestRoot-Setup.exe"
 $tmp = Join-Path $env:TEMP ("rws-kit-test-" + [guid]::NewGuid().ToString("N"))   # unique per run; only this folder is deleted
 $fakeSetup = Join-Path $tmp "fake-legacy-setup.exe"
+$fake101Setup = Join-Path $tmp "fake-kit101-setup.exe"
 $uninstallBase = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall"
 $legacyKey = "$uninstallBase\RWS-KIT-TESTLEGACY-DA4CA68C_is1"
 $kitKey = "$uninstallBase\RWS-KIT-TESTROOT-035D8EC0_is1"
-$obsExeDir = Join-Path $pf ".testbed\obs\bin\64bit"
+# The AppId Kit 1.0.1 shipped with. It must never change: it is how 1.1.0 finds and replaces 1.0.1.
+$kitRealAppId = "{035D8EC0-7626-4A56-BF6D-A31548414EFA}"
 
-$msDll = Join-Path $testRoot "rws-multistream\bin\64bit\rws-multistream.dll"
-$pfDll = Join-Path $testRoot "rws-preflight\bin\64bit\rws-preflight.dll"
-$msLoc = Join-Path $testRoot "rws-multistream\data\locale\en-US.ini"
-$pfLoc = Join-Path $testRoot "rws-preflight\data\locale\en-US.ini"
+$kitDll = Join-Path $testRoot "rws-stream-kit\bin\64bit\rws-stream-kit.dll"
+$kitLoc = Join-Path $testRoot "rws-stream-kit\data\locale\en-US.ini"
+$stagedDll = Join-Path $stage "rws-stream-kit\bin\64bit\rws-stream-kit.dll"
 $uninst = Join-Path $testRoot "_kit\unins000.exe"
+$oldMods = "rws-multistream", "rws-preflight", "rws-inflight", "rws-beacon"
+function OldPath($mod, $rel) { Join-Path $testRoot "$mod\$rel" }
 
 function ResetRoot {
   # Scratch only: refuse to delete anything that is not inside this project's .testbed.
@@ -65,6 +72,34 @@ function ResetRoot {
   if (Test-Path $testRoot) { Remove-Item -Recurse -Force $testRoot }
   New-Item -ItemType Directory -Force $testRoot | Out-Null
   foreach ($k in $legacyKey, $kitKey) { if (Test-Path $k) { Remove-Item -Recurse -Force $k } }
+  $script:keepers = @()
+  $script:keepHash = @{}
+}
+function Sha($p) { (Get-FileHash $p -Algorithm SHA256).Hash }
+function Put($path, $text) {
+  New-Item -ItemType Directory -Force (Split-Path -Parent $path) | Out-Null
+  Set-Content -Path $path -Value $text -Encoding ASCII
+}
+# Files that are NOT ours and must survive everything: remembered with their hash.
+function Keep($path, $text) {
+  Put $path $text
+  $script:keepers += $path
+  $script:keepHash[$path] = Sha $path
+}
+function KeepersIntact($label) {
+  $bad = @($script:keepers | Where-Object { !(Test-Path $_) -or ((Sha $_) -ne $script:keepHash[$_]) })
+  Check ($bad.Count -eq 0) "$label : $($script:keepers.Count) user/config file(s) untouched$(if ($bad.Count) { ' (changed or gone: ' + (($bad | ForEach-Object { Split-Path -Leaf $_ }) -join ', ') + ')' })"
+}
+# User settings the installer must never touch: plugin_config both outside the install root (the real place)
+# and, as a hostile placement, inside it.
+function SeedConfig {
+  Keep (Join-Path $cfgRoot "rws-multistream\settings.json") '{"destinations":[]}'
+  Keep (Join-Path $cfgRoot "rws-multistream\hotkeys.json") '{"hotkeys":1}'
+  Keep (Join-Path $cfgRoot "rws-multistream\reports\session-1.json") '{"report":1}'
+  Keep (Join-Path $cfgRoot "rws-preflight\settings.json") '{"checks":1}'
+  Keep (Join-Path $cfgRoot "rws-inflight\settings.json") '{"lights":1}'
+  Keep (Join-Path $cfgRoot "rws-stream-kit\settings.json") '{"tools":1}'
+  Keep (Join-Path $testRoot "plugin_config\rws-multistream\settings.json") '{"inside":1}'
 }
 function RunProc($exe, $argList, $label, [switch]$ExpectFailure) {
   $p = Start-Process -FilePath $exe -ArgumentList $argList -PassThru -WindowStyle Hidden
@@ -77,46 +112,84 @@ function RunProc($exe, $argList, $label, [switch]$ExpectFailure) {
   else { Check ($p.ExitCode -eq 0) "$label exit code 0 (got $($p.ExitCode))" }
   return $p.ExitCode
 }
-function Install($components, $label, [switch]$ExpectFailure) {
+function Install($label, [switch]$ExpectFailure) {
   $log = Join-Path $bed "install-$label.log"
-  $a = @("/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/COMPONENTS=`"$components`"", "/LOG=`"$log`"")
-  if ($ExpectFailure) { return RunProc $testSetup $a "install ($components)" -ExpectFailure }
-  return RunProc $testSetup $a "install ($components)"
+  $a = @("/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/LOG=`"$log`"")
+  if ($ExpectFailure) { return RunProc $testSetup $a "install 1.1.0 ($label)" -ExpectFailure }
+  return RunProc $testSetup $a "install 1.1.0 ($label)"
 }
-function PluginFiles { @(Get-ChildItem $testRoot -Recurse -File -ErrorAction SilentlyContinue) }
-function Sha($p) { (Get-FileHash $p -Algorithm SHA256).Hash }
+# The fake Kit 1.0.1 installer lays down the released 1.0.1 state (components as 1.0.1 had them).
+function Install101($components, $label) {
+  $log = Join-Path $bed "install101-$label.log"
+  $a = @("/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/COMPONENTS=`"$components`"", "/LOG=`"$log`"")
+  return RunProc $fake101Setup $a "fake Kit 1.0.1 install ($components)"
+}
+function AllFiles { @(Get-ChildItem $testRoot -Recurse -File -ErrorAction SilentlyContinue) }
+# Files in the install root that are not a protected user/config file.
+function OurFiles { @(AllFiles | Where-Object { $script:keepers -notcontains $_.FullName }) }
+function NoOldFolders($label) {
+  $left = @($oldMods | Where-Object { Test-Path (Join-Path $testRoot $_) })
+  Check ($left.Count -eq 0) "$label : no old plugin folder is left ($($left -join ', '))"
+}
+function NewPluginOk($label) {
+  Check ((Test-Path $kitDll) -and ((Sha $kitDll) -eq (Sha $stagedDll))) "$label : rws-stream-kit.dll installed and is the staged DLL"
+  Check (Test-Path $kitLoc) "$label : rws-stream-kit locale installed"
+  Check ((Test-Path (Join-Path $testRoot "rws-stream-kit\data\manual\index.html")) -and (Test-Path (Join-Path $testRoot "rws-stream-kit\data\manual\levels.html"))) "$label : manual installed (index.html + levels.html)"
+  Check (!(Test-Path (Join-Path $testRoot "rws-stream-kit\bin\64bit\rws-stream-kit.pdb"))) "$label : no .pdb installed"
+  Check (Test-Path $uninst) "$label : uninstaller present"
+}
 function KitUninstall($label) {
   RunProc $uninst @("/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART") "uninstall ($label)" | Out-Null
   for ($i = 0; $i -lt 150 -and (Test-Path $uninst); $i++) { Start-Sleep -Milliseconds 200 }   # second phase deletes itself
-  $left = @(PluginFiles)
-  Check ($left.Count -eq 0) "uninstall ($label): TestRoot holds no files (left: $($left.Count) $(($left | Select-Object -First 5 | ForEach-Object { $_.FullName.Substring($testRoot.Length) }) -join ', '))"
+  $left = @(OurFiles)
+  Check ($left.Count -eq 0) "uninstall ($label): nothing of ours is left in the install root (left: $($left.Count) $(($left | Select-Object -First 5 | ForEach-Object { $_.FullName.Substring($testRoot.Length) }) -join ', '))"
+  Check (!(Test-Path (Join-Path $testRoot "rws-stream-kit"))) "uninstall ($label): rws-stream-kit folder gone"
+  Check (!(Test-Path (Join-Path $testRoot "_kit"))) "uninstall ($label): installer folder gone"
+  Check (!(Test-Path $kitKey)) "uninstall ($label): uninstall entry gone"
+  KeepersIntact "uninstall ($label)"
 }
 
-$obsProc = $null
+$dummyObs = $null
 try {
   # --- Safety and preconditions ---
   $running = @(Get-Process -Name obs64 -ErrorAction SilentlyContinue)
   if ($running.Count -gt 0) { throw "an OBS (obs64.exe) is already running; this test will not touch it. Close it and re-run" }
-  Check (Test-Path (Join-Path $stage "rws-multistream\bin\64bit\rws-multistream.dll")) "staging holds the Multistream DLL"
-  Check (Test-Path (Join-Path $stage "rws-preflight\bin\64bit\rws-preflight.dll")) "staging holds the Pre-Flight DLL"
-  Check (Test-Path (Join-Path $obsExeDir "obs64.exe")) "portable test OBS exists ($obsExeDir)"
+  Check (Test-Path $stagedDll) "staging holds rws-stream-kit.dll"
+  Check (Test-Path (Join-Path $stage "rws-stream-kit\data\locale\en-US.ini")) "staging holds the locale"
+  Check (Test-Path (Join-Path $stage "rws-stream-kit\data\manual\index.html")) "staging holds the manual"
+  Check ($version -match '^\d+\.\d+\.\d+$') "version from plugin\buildspec.json: $version"
+  Check (Test-Path $iscc) "Inno Setup compiler found"
   if ($script:fails -gt 0) { throw "preconditions failed (run tools\package.ps1 first)" }
 
-  # --- Static: the release script uses Multistream's real legacy AppId ---
-  $iss = Get-Content (Join-Path $root "installer\stream-kit.iss") -Raw
-  $msIssPath = Join-Path $ms "installer\rws-multistream.iss"
+  # --- Static checks on the release script ---
+  $issPath = Join-Path $root "installer\stream-kit.iss"
+  $iss = Get-Content $issPath -Raw
   $branches = $iss -split '(?m)^#else\s*$'
+  $msIssPath = Join-Path $ms "installer\rws-multistream.iss"
   if (Test-Path $msIssPath) {
     $msIss = Get-Content $msIssPath -Raw
     $realId = if ($msIss -match 'AppId=\{\{([0-9A-Fa-f-]+)\}') { $Matches[1] } else { "" }
     Check ($realId.Length -gt 30) "found Multistream's own AppId ($realId)"
     Check ($branches[1] -match [regex]::Escape('#define LegacyAppId "{' + $realId + '}"')) "release build: LegacyAppId is Multistream's real AppId"
   } else {
-    Say "SKIP: legacy installer script not present in this layout (static AppId check)"
+    Say "SKIP: legacy installer script not present in this layout (static legacy AppId check)"
   }
   Check ($branches[0] -match 'LegacyAppId "RWS-KIT-TESTLEGACY') "TestRoot build: LegacyAppId is the test-only id"
+  Check ($iss -match [regex]::Escape("AppId={$kitRealAppId")) "release build: Kit AppId is still the one 1.0.1 shipped ($kitRealAppId), so it upgrades in place"
+  $fake101 = Get-Content (Join-Path $root "tools\test-fake-kit101.iss") -Raw
+  $idTest = [regex]::Match($iss, '(?m)^AppId=(RWS-KIT-TESTROOT-\S+)').Groups[1].Value
+  Check ($idTest.Length -gt 10 -and $fake101 -match [regex]::Escape("AppId=$idTest")) "fake 1.0.1 installer uses the TestRoot Kit AppId ($idTest)"
+  Check ($iss -notmatch '(?m)^\[(Components|Types)\]') "no [Components] or [Types]: one plugin, tools are switched in the dock"
+  $del = [regex]::Match($iss, '(?ms)^\[InstallDelete\](.*?)^\[').Groups[1].Value
+  $delLines = @($del -split "`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" -and !$_.StartsWith(";") })
+  Check ($delLines.Count -gt 0) "[InstallDelete] has $($delLines.Count) entries"
+  Check (@($delLines | Where-Object { $_ -notmatch '^Type: (files|dirifempty);' }).Count -eq 0) "[InstallDelete] holds only 'files' and 'dirifempty' entries (never filesandordirs)"
+  Check (@($delLines | Where-Object { $_ -match 'plugin_config|Credential' }).Count -eq 0) "[InstallDelete] never names plugin_config or credentials"
+  foreach ($mod in $oldMods) {
+    Check (@($delLines | Where-Object { $_ -match [regex]::Escape("\$mod\bin\64bit\$mod.dll") }).Count -eq 1) "[InstallDelete] removes $mod.dll by exact name"
+  }
 
-  # --- Compile the TestRoot installer and the fake legacy installer ---
+  # --- Compile the TestRoot installers: Kit 1.1.0, fake legacy Multistream, fake Kit 1.0.1 ---
   ResetRoot
   Remove-Item $testSetup -ErrorAction SilentlyContinue
   & $iscc "/DAppVersion=$version" "/DStage=$stage" "/DNoSign" "/DMsLogo=$msLogo" "/DTestRoot=$testRoot" "/Q" "installer\stream-kit.iss"
@@ -124,82 +197,129 @@ try {
   if (Test-Path $tmp) { Remove-Item -Recurse -Force $tmp }
   New-Item -ItemType Directory -Force $tmp | Out-Null
   & $iscc "/DMsLogo=$msLogo" "/DTestRoot=$testRoot" "/O$tmp" "/Q" "tools\test-fake-legacy.iss"
-  Check ($LASTEXITCODE -eq 0 -and (Test-Path $fakeSetup)) "ISCC compiled the fake legacy installer (into %TEMP%)"
-  if (!(Test-Path $testSetup) -or !(Test-Path $fakeSetup)) { throw "could not compile the installers" }
+  Check ($LASTEXITCODE -eq 0 -and (Test-Path $fakeSetup)) "ISCC compiled the fake legacy Multistream installer (into %TEMP%)"
+  & $iscc "/DTestRoot=$testRoot" "/O$tmp" "/Q" "tools\test-fake-kit101.iss"
+  Check ($LASTEXITCODE -eq 0 -and (Test-Path $fake101Setup)) "ISCC compiled the fake Kit 1.0.1 installer (into %TEMP%)"
+  if (!(Test-Path $testSetup) -or !(Test-Path $fakeSetup) -or !(Test-Path $fake101Setup)) { throw "could not compile the installers" }
+  if (Test-Path $cfgRoot) { Remove-Item -Recurse -Force (Split-Path -Parent $cfgRoot) }
 
   # --- 1. Stale legacy entry that cannot be uninstalled: abort, install nothing ---
   ResetRoot
+  SeedConfig
   New-Item -Path $legacyKey -Force | Out-Null
   New-ItemProperty -Path $legacyKey -Name UninstallString -Value ('"' + (Join-Path $tmp "no-such-unins000.exe") + '"') | Out-Null
-  Install "multistream,preflight" "legacyfail" -ExpectFailure | Out-Null
-  Check ((PluginFiles).Count -eq 0) "legacy removal failed: nothing was installed"
+  Install "legacyfail" -ExpectFailure | Out-Null
+  Check (@(OurFiles).Count -eq 0) "legacy removal failed: nothing was installed"
   Check (Test-Path $legacyKey) "legacy removal failed: the legacy entry is untouched"
+  KeepersIntact "legacy removal failed"
   Remove-Item -Recurse -Force $legacyKey
 
-  # --- 2. OBS running (portable copy, captured PID): installer refuses ---
+  # --- 2. OBS running (a copy of powershell.exe named obs64.exe, captured PID): refuses, leaves the old install alone ---
   ResetRoot
-  $env:RWS_PREFLIGHT_TEST = "1"
-  $obsProc = Start-Process (Join-Path $obsExeDir "obs64.exe") -WorkingDirectory $obsExeDir -PassThru -ArgumentList @(
-    "--portable", "--multi", "--profile", "PreflightTest", "--collection", "PreflightTest",
-    "--disable-updater", "--disable-missing-files-check")
-  Start-Sleep -Seconds 6
-  Check (!$obsProc.HasExited) "portable test OBS is running (PID $($obsProc.Id))"
-  Install "multistream,preflight" "obsrunning" -ExpectFailure | Out-Null
-  Check ((PluginFiles).Count -eq 0) "OBS running: nothing was installed"
-  Stop-Process -Id $obsProc.Id -Force -ErrorAction SilentlyContinue   # ONLY the captured PID
-  Check ($obsProc.WaitForExit(20000)) "portable test OBS stopped"
-  $obsProc = $null
+  SeedConfig
+  Install101 "multistream,preflight" "obsrunning" | Out-Null
+  $before = @(OurFiles | ForEach-Object { $_.FullName + "|" + $_.Length } | Sort-Object)
+  $fakeObsDir = Join-Path $tmp "obs"
+  New-Item -ItemType Directory -Force $fakeObsDir | Out-Null
+  Copy-Item (Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe") (Join-Path $fakeObsDir "obs64.exe")
+  $dummyObs = Start-Process (Join-Path $fakeObsDir "obs64.exe") -ArgumentList @("-NoProfile", "-Command", "Start-Sleep -Seconds 180") -WindowStyle Hidden -PassThru
+  Start-Sleep -Seconds 2
+  Check (!$dummyObs.HasExited) "stand-in obs64.exe is running (PID $($dummyObs.Id))"
+  Install "obsrunning" -ExpectFailure | Out-Null
+  $after = @(OurFiles | ForEach-Object { $_.FullName + "|" + $_.Length } | Sort-Object)
+  Check (($before -join "`n") -eq ($after -join "`n")) "OBS running: the existing 1.0.1 install was left exactly as it was ($($after.Count) files)"
+  Check (!(Test-Path $kitDll)) "OBS running: the new plugin was not installed"
+  KeepersIntact "OBS running"
+  Stop-Process -Id $dummyObs.Id -Force -ErrorAction SilentlyContinue   # ONLY the captured PID
+  Check ($dummyObs.WaitForExit(20000)) "stand-in obs64.exe stopped"
+  $dummyObs = $null
 
-  # --- 3. Components ---
+  # --- 3. Clean install, re-install over itself, uninstall ---
   ResetRoot
-  Install "preflight" "1" | Out-Null
-  Check (Test-Path $pfDll) "preflight only: rws-preflight.dll installed"
-  Check (Test-Path $pfLoc) "preflight only: rws-preflight locale installed"
-  Check (!(Test-Path (Join-Path $testRoot "rws-multistream"))) "preflight only: no rws-multistream folder"
-  Check ((Sha $pfDll) -eq (Sha (Join-Path $stage "rws-preflight\bin\64bit\rws-preflight.dll"))) "preflight only: installed DLL is the staged DLL"
-  Check (Test-Path $uninst) "preflight only: uninstaller present"
+  SeedConfig
+  Install "clean" | Out-Null
+  NewPluginOk "clean install"
+  NoOldFolders "clean install"
+  Check (@(OurFiles | Where-Object { $_.FullName -notlike "$testRoot\rws-stream-kit\*" -and $_.FullName -notlike "$testRoot\_kit\*" }).Count -eq 0) "clean install: the installer wrote only under rws-stream-kit\ and its own _kit\ folder"
+  $dllHash = Sha $kitDll
+  Install "again" | Out-Null
+  Check ((Sha $kitDll) -eq $dllHash) "re-running the installer over itself leaves the same DLL"
+  Check ((Get-ItemProperty $kitKey -ErrorAction SilentlyContinue).DisplayVersion -eq $version) "uninstall entry says version $version"
+  KeepersIntact "clean install"
+  KitUninstall "clean"
 
-  Install "multistream,preflight" "2" | Out-Null
-  Check ((Test-Path $msDll) -and (Test-Path $msLoc)) "both: Multistream DLL + locale installed"
-  Check ((Test-Path $pfDll) -and (Test-Path $pfLoc)) "both: Pre-Flight DLL + locale installed"
-  Check ((Sha $msDll) -eq (Sha (Join-Path $stage "rws-multistream\bin\64bit\rws-multistream.dll"))) "both: Multistream DLL is the staged DLL"
+  # --- 4. Upgrade from Kit 1.0.1, every subset of the old tools ---
+  foreach ($set in @("multistream,preflight", "multistream", "preflight")) {
+    ResetRoot
+    SeedConfig
+    Install101 $set "up-$($set -replace ',','-')" | Out-Null
+    $hadMs = $set -match 'multistream'; $hadPf = $set -match 'preflight'
+    Check (((Test-Path (OldPath "rws-multistream" "bin\64bit\rws-multistream.dll")) -eq $hadMs) -and ((Test-Path (OldPath "rws-preflight" "bin\64bit\rws-preflight.dll")) -eq $hadPf)) "1.0.1 ($set): old state laid down"
+    Check ((Get-ItemProperty $kitKey -ErrorAction SilentlyContinue).DisplayVersion -eq "1.0.1") "1.0.1 ($set): registered as version 1.0.1"
+    Install "up-$($set -replace ',','-')" | Out-Null
+    NewPluginOk "upgrade from 1.0.1 ($set)"
+    NoOldFolders "upgrade from 1.0.1 ($set)"
+    Check ((Get-ItemProperty $kitKey -ErrorAction SilentlyContinue).DisplayVersion -eq $version) "upgrade from 1.0.1 ($set): the same uninstall entry now says $version (upgraded in place)"
+    Check (@(Get-ChildItem $uninstallBase | Where-Object { $_.PSChildName -like 'RWS-KIT-TESTROOT-*' }).Count -eq 1) "upgrade from 1.0.1 ($set): exactly one Kit uninstall entry"
+    KeepersIntact "upgrade from 1.0.1 ($set)"
+    KitUninstall "after upgrade from 1.0.1 ($set)"
+    NoOldFolders "after uninstall of upgrade from 1.0.1 ($set)"
+  }
 
-  # A user's own file in a plugin folder must survive deselecting that plugin.
-  $userFile = Join-Path $testRoot "rws-preflight\my-own-notes.txt"
-  Set-Content -Path $userFile -Value "mine" -Encoding ASCII
-  Install "multistream" "3" | Out-Null
-  Check (Test-Path $msDll) "multistream only: Multistream DLL still installed"
-  Check (!(Test-Path $pfDll) -and !(Test-Path $pfLoc)) "multistream only: Pre-Flight's DLL and locale removed"
-  Check ((Test-Path $userFile) -and ((Get-Content $userFile -Raw).Trim() -eq "mine")) "multistream only: the user's own file in rws-preflight\ survived"
-  Check (!(Test-Path (Join-Path $testRoot "rws-preflight\bin")) -and !(Test-Path (Join-Path $testRoot "rws-preflight\data"))) "multistream only: Pre-Flight's now-empty bin and data folders removed"
-  Remove-Item $userFile -Force
-
-  Install "preflight" "4" | Out-Null
-  Check (Test-Path $pfDll) "preflight only (again): Pre-Flight installed"
-  Check (!(Test-Path (Join-Path $testRoot "rws-multistream"))) "preflight only (again): Multistream's folder removed when nothing else was in it"
-
-  KitUninstall "components"
-  Check (!(Test-Path (Join-Path $testRoot "rws-preflight"))) "uninstall: rws-preflight folder gone"
-
-  # --- 4. Legacy removal: a fake legacy Multistream installed first, then the Kit ---
+  # --- 5. Upgrade over a development rws-inflight and an old rws-beacon, with no Kit install at all ---
   ResetRoot
+  SeedConfig
+  Put (OldPath "rws-inflight" "bin\64bit\rws-inflight.dll") "dev dll"
+  Put (OldPath "rws-inflight" "bin\64bit\rws-inflight.pdb") "dev pdb"
+  Put (OldPath "rws-inflight" "data\locale\en-US.ini") "dev locale"
+  Put (OldPath "rws-beacon" "bin\64bit\rws-beacon.dll") "old dll"
+  Put (OldPath "rws-beacon" "data\locale\en-US.ini") "old locale"
+  Install "devinflight" | Out-Null
+  NewPluginOk "dev rws-inflight + rws-beacon"
+  NoOldFolders "dev rws-inflight + rws-beacon"
+  KeepersIntact "dev rws-inflight + rws-beacon"
+  KitUninstall "dev inflight"
+
+  # --- 6. Files the user put into old plugin folders survive; the folders stay; uninstall leaves them ---
+  ResetRoot
+  SeedConfig
+  Install101 "multistream,preflight" "userfiles" | Out-Null
+  Put (OldPath "rws-inflight" "bin\64bit\rws-inflight.dll") "dev dll"
+  Put (OldPath "rws-inflight" "data\locale\en-US.ini") "dev locale"
+  Keep (OldPath "rws-multistream" "my-own-notes.txt") "mine, multistream"
+  Keep (OldPath "rws-preflight" "bin\64bit\keep-me.txt") "mine, preflight"
+  Keep (OldPath "rws-inflight" "data\locale\de-DE.ini") "mine, inflight locale"
+  Install "userfiles" | Out-Null
+  NewPluginOk "user files in old folders"
+  KeepersIntact "upgrade with user files in the old folders"
+  Check (!(Test-Path (OldPath "rws-multistream" "bin\64bit\rws-multistream.dll")) -and !(Test-Path (OldPath "rws-multistream" "data\locale\en-US.ini"))) "user files: Multistream's old dll and locale removed"
+  Check (!(Test-Path (OldPath "rws-preflight" "bin\64bit\rws-preflight.dll")) -and !(Test-Path (OldPath "rws-preflight" "data\locale\en-US.ini"))) "user files: Pre-Flight's old dll and locale removed"
+  Check (!(Test-Path (OldPath "rws-inflight" "bin\64bit\rws-inflight.dll")) -and !(Test-Path (OldPath "rws-inflight" "data\locale\en-US.ini"))) "user files: In-Flight's dev dll and locale removed"
+  Check (!(Test-Path (OldPath "rws-multistream" "bin")) -and !(Test-Path (OldPath "rws-multistream" "data"))) "user files: rws-multistream's now-empty bin and data folders removed"
+  Check (!(Test-Path (OldPath "rws-preflight" "data")) -and !(Test-Path (OldPath "rws-inflight" "bin"))) "user files: other now-empty folders removed"
+  Check ((Test-Path (OldPath "rws-multistream" "")) -and (Test-Path (OldPath "rws-preflight" "bin\64bit")) -and (Test-Path (OldPath "rws-inflight" "data\locale"))) "user files: the folders that still hold a user file were kept"
+  KitUninstall "user files in old folders"
+  KeepersIntact "uninstall with user files in the old folders"
+
+  # --- 7. Legacy removal: a fake standalone Multistream 1.0.0 installed first, then the Kit ---
+  ResetRoot
+  SeedConfig
   RunProc $fakeSetup @("/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART") "fake legacy install" | Out-Null
   Check (Test-Path $legacyKey) "legacy: its uninstall entry is registered"
-  Check (Test-Path (Join-Path $testRoot "rws-multistream\unins000.exe")) "legacy: its uninstaller is in the plugin folder"
-  Check (Test-Path $msDll) "legacy: its (dummy) DLL is installed"
-  Install "multistream,preflight" "5" | Out-Null
+  Check (Test-Path (OldPath "rws-multistream" "unins000.exe")) "legacy: its uninstaller is in the plugin folder"
+  Check (Test-Path (OldPath "rws-multistream" "bin\64bit\rws-multistream.dll")) "legacy: its (dummy) DLL is installed"
+  Install "legacy" | Out-Null
   Check (!(Test-Path $legacyKey)) "legacy: its uninstall entry is gone after the Kit install"
-  Check (!(Test-Path (Join-Path $testRoot "rws-multistream\unins000.exe"))) "legacy: its uninstaller is gone"
-  Check ((Test-Path $msDll) -and ((Sha $msDll) -eq (Sha (Join-Path $stage "rws-multistream\bin\64bit\rws-multistream.dll")))) "legacy: the Kit now owns the real Multistream DLL"
-  Check (Test-Path $pfDll) "legacy: Pre-Flight installed too"
-  Check (Test-Path $uninst) "legacy: the Kit's own uninstaller is present"
+  Check (!(Test-Path (OldPath "rws-multistream" "unins000.exe"))) "legacy: its uninstaller is gone"
+  NewPluginOk "after legacy removal"
+  NoOldFolders "after legacy removal"
+  KeepersIntact "legacy removal"
   KitUninstall "after legacy"
 } catch {
   Say "FAIL: $($_.Exception.Message)"
   $script:fails++
 } finally {
-  if ($obsProc -and !$obsProc.HasExited) { Stop-Process -Id $obsProc.Id -Force -ErrorAction SilentlyContinue }   # ONLY the captured PID
-  Remove-Item Env:\RWS_PREFLIGHT_TEST -ErrorAction SilentlyContinue
+  if ($dummyObs -and !$dummyObs.HasExited) { Stop-Process -Id $dummyObs.Id -Force -ErrorAction SilentlyContinue }   # ONLY the captured PID
   foreach ($k in $legacyKey, $kitKey) { if (Test-Path $k) { Remove-Item -Recurse -Force $k -ErrorAction SilentlyContinue } }
   if (Test-Path $tmp) { Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue }
 }

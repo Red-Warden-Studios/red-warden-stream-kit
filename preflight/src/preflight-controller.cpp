@@ -5,6 +5,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
 */
 
 #include "preflight-controller.hpp"
+#include "kit-cost.hpp"
 
 #include <obs.h>
 #include <plugin-support.h>
@@ -37,6 +38,7 @@ PreflightController::PreflightController(QObject *parent) : QObject(parent), mic
 	settings_ = Settings::load();
 	syncTicks();
 
+	connect(&mic_, &MicTest::numbersChanged, this, &PreflightController::micNumbersChanged);
 	connect(&mic_, &MicTest::runningChanged, this, [this](bool r) {
 		emit micTestRunningChanged(r);
 		if (!r && !shutdown_)
@@ -54,14 +56,20 @@ PreflightController::~PreflightController()
 	shutdown();
 }
 
+void PreflightController::releaseSources()
+{
+	sourcesReleased_ = true;
+	mic_.cancel(); // detaches and destroys the volmeter, drops the source ref
+}
+
 void PreflightController::shutdown()
 {
 	if (shutdown_)
 		return;
 	shutdown_ = true;
 	timer_.stop();
-	mic_.cancel();  // detaches and destroys the volmeter, drops the source ref
-	probe_.stop();  // bounded wait for the vendor worker, see MultistreamProbe::stop
+	releaseSources();
+	probe_.stop(); // nothing to wait for: the probe is a direct call on this thread; this just drops the source
 	obs_.resetFrameWindows();
 	obs_.shutdown(); // stops the disk worker (short bounded wait)
 }
@@ -135,9 +143,30 @@ void PreflightController::setSettings(const Settings &s)
 	tick();
 }
 
+void PreflightController::resetForNewStream()
+{
+	if (shutdown_)
+		return;
+	ticks_.fill(false);
+	mic_.cancel(); // also forgets an earlier pass
+	obs_.resetNetworkWindow();
+	obs_.resetFrameWindows();
+	probe_.poke();
+	tick();
+}
+
+void PreflightController::setMultistreamSource(MultistreamProbe::Source src)
+{
+	if (shutdown_)
+		return;
+	// No tick() here: this runs while the Kit is still loading (scenes and sources are not there yet), so a tick now would
+	// judge the mic and scenes too early. The next 1 s tick asks Multistream straight away (setSource marks the probe due).
+	probe_.setSource(std::move(src));
+}
+
 void PreflightController::startMicTest()
 {
-	if (shutdown_ || settings_.micUuid.isEmpty())
+	if (shutdown_ || sourcesReleased_ || settings_.micUuid.isEmpty())
 		return;
 	mic_.start(settings_.micUuid);
 }
@@ -199,7 +228,7 @@ void PreflightController::handleFrontendEvent(obs_frontend_event event)
 		tick();
 		break;
 	case OBS_FRONTEND_EVENT_FINISHED_LOADING:
-		probe_.poke(); // Multistream registers its vendor after load; ask again now
+		probe_.poke(); // everything has loaded; ask Multistream again now
 		break;
 	case OBS_FRONTEND_EVENT_EXIT:
 		shutdown();
@@ -211,10 +240,12 @@ void PreflightController::handleFrontendEvent(obs_frontend_event event)
 
 void PreflightController::tick()
 {
+	kitcost::Scope costScope(kitcost::PreflightTick); // test-only timing, see kit-cost.hpp
 	if (shutdown_)
 		return;
 	ObsProbe::Runtime rt;
 	rt.nowMs = nowMs();
+	probe_.poll(rt.nowMs); // direct, in-process: Multistream's dock on this thread
 	const MultistreamResult ms = probe_.result();
 	rt.multistreamStatus = ms.status;
 	rt.multistreamNames = ms.names;

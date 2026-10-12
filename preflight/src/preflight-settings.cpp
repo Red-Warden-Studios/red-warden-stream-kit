@@ -6,6 +6,8 @@ SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "preflight-settings.hpp"
 
+#include "kit-paths.hpp"
+
 #include <obs-module.h>
 #include <util/bmem.h>
 #include <util/platform.h>
@@ -27,9 +29,10 @@ void setStr(obs_data_t *d, const char *key, const QString &v)
 Settings Settings::load()
 {
 	Settings s;
-	char *path = obs_module_config_path("settings.json");
-	if (!path)
+	const std::string pathStr = kitpaths::toolFile(kitpaths::kPreflight, "settings.json");
+	if (pathStr.empty())
 		return s;
+	const char *path = pathStr.c_str();
 	if (obs_data_t *d = obs_data_create_from_json_file_safe(path, "bak")) {
 		obs_data_set_default_bool(d, "setup_done", s.setupDone);
 		obs_data_set_default_bool(d, "use_main_stream", s.useMainStream);
@@ -76,15 +79,15 @@ Settings Settings::load()
 		}
 		obs_data_release(d);
 	}
-	bfree(path);
 	return s;
 }
 
 bool Settings::save() const
 {
-	char *path = obs_module_config_path("settings.json");
-	if (!path)
+	const std::string pathStr = kitpaths::toolFile(kitpaths::kPreflight, "settings.json");
+	if (pathStr.empty())
 		return false;
+	const char *path = pathStr.c_str();
 	// Start from what is on disk so unknown keys are kept.
 	obs_data_t *d = obs_data_create_from_json_file_safe(path, "bak");
 	if (!d)
@@ -117,13 +120,11 @@ bool Settings::save() const
 	obs_data_set_array(d, "custom_items", arr);
 	obs_data_array_release(arr);
 
-	if (char *dir = obs_module_config_path("")) {
-		os_mkdirs(dir);
-		bfree(dir);
-	}
+	const std::string dirStr = kitpaths::toolDir(kitpaths::kPreflight);
+	if (!dirStr.empty())
+		os_mkdirs(dirStr.c_str());
 	const bool ok = obs_data_save_json_safe(d, path, "tmp", "bak");
 	obs_data_release(d);
-	bfree(path);
 	return ok;
 }
 

@@ -20,7 +20,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
 #include <QVector>
 
 // Everything between OBS and the evaluator. UI thread only. Owns the settings, the OBS probe, the
-// mic test, the Multistream probe (its own worker thread) and the 1 s timer.
+// mic test, the Multistream probe (a direct in-process question on this thread, no worker) and the 1 s timer.
 class PreflightController : public QObject {
 	Q_OBJECT
 public:
@@ -33,8 +33,19 @@ public:
 
 	QVector<preflight::CheckResult> results() const { return results_; }
 
+	// The Kit's Reset ("start fresh for the next stream"): clears the ticked custom items and the mic-test
+	// result (a running test is cancelled), restarts the frame windows and re-runs every check right away,
+	// as at startup.
+	void resetForNewStream();
+
+	// Where the Multistream check reads the destinations from (the Kit wires it when Multistream is loaded; never set =
+	// "Multistream wasn't found"). Called on the UI thread, at most every 5 s. See MultistreamProbe.
+	void setMultistreamSource(preflight::MultistreamProbe::Source src);
+
 	void startMicTest();
 	bool micTestRunning() const { return mic_.running(); }
+	// Loudest / Typical of the last finished mic test (cleared by Reset, a mic change, a new test).
+	preflight::MicNumbers micNumbers() const { return mic_.lastNumbers(); }
 	void setItemTicked(int index, bool ticked);
 
 	preflight::GoLiveDecision goLiveDecision() const;
@@ -47,6 +58,9 @@ public:
 
 	void handleFrontendEvent(obs_frontend_event event);
 	void shutdown(); // idempotent; call at OBS_FRONTEND_EVENT_EXIT before Qt objects die
+	// Idempotent. Ends the mic test (volmeter + source reference) and keeps it from starting again. Called at
+	// OBS_FRONTEND_EVENT_SCRIPTING_SHUTDOWN, which OBS emits BEFORE ClearSceneData(); shutdown() calls it too.
+	void releaseSources();
 
 	static QString stateName(preflight::State s);
 	static QString checkName(preflight::CheckId id);
@@ -54,6 +68,7 @@ public:
 signals:
 	void resultsChanged(QVector<preflight::CheckResult> results);
 	void micTestRunningChanged(bool running);
+	void micNumbersChanged();
 
 private:
 	void tick();
@@ -72,4 +87,5 @@ private:
 	QStringList startedReds_;
 	bool testHooks_ = false;
 	bool shutdown_ = false;
+	bool sourcesReleased_ = false; // releaseSources() ran: no new mic test
 };

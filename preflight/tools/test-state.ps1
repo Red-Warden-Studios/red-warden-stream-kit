@@ -15,20 +15,26 @@
 #>
 param(
   [string]$Config = "RelWithDebInfo",
-  [int]$Seconds = 50
+  [int]$Seconds = 50,
+  # -NoWebsocket: obs-websocket.dll is renamed away in the portable copy (restored afterwards, even on failure).
+  # CHANGED (direct bridge): Pre-Flight no longer asks Multistream through obs-websocket, it asks Multistream's dock
+  # in-process, so with no obs-websocket Multistream is STILL found (Red, "none turned on"), exactly as with it. What
+  # this run proves is that Multistream says "remote control disabled" (Test-KitLoadLog -NoVendor) and Pre-Flight does not care.
+  [switch]$NoWebsocket
 )
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
-$bed  = Join-Path $root ".testbed"
-$obs  = Join-Path $bed "obs"
-$cfg  = Join-Path $obs "config\obs-studio"
+$kitTools = Join-Path (Split-Path -Parent $root) "plugin\tools"                                          # published layout: <repo>\plugin
+if (!(Test-Path $kitTools)) { $kitTools = Join-Path (Split-Path -Parent $root) "red-warden-stream-kit\plugin\tools" }   # development layout
+. (Join-Path $kitTools "kit-testbed.ps1")
+$kit  = Get-KitTestbed $Config
+$bed  = $kit.Bed
+$obs  = $kit.Obs
+$cfg  = $kit.Cfg
 $prof = Join-Path $cfg "basic\profiles\PreflightState"
-$dll  = Join-Path $root "build_x64\$Config\rws-preflight.dll"
-$pdb  = Join-Path $root "build_x64\$Config\rws-preflight.pdb"
-$src  = Join-Path (Split-Path -Parent $root) "red-warden-multistream\.testbed\obs"
-$result = Join-Path $bed "run-state.txt"
+$dll  = $kit.Dll
+$pdb  = $kit.Pdb
 New-Item -ItemType Directory -Force $bed | Out-Null
-Remove-Item $result -ErrorAction SilentlyContinue
 
 # fixed UUIDs
 $uStart = "c0000000-0000-0000-0000-000000000001"
@@ -37,32 +43,24 @@ $uMic   = "c0000000-0000-0000-0000-000000000003"
 $uColor = "c0000000-0000-0000-0000-000000000004"
 
 function Finish([bool]$ok, [string[]]$lines) {
-  $head = if ($ok) { "PASS" } else { "FAIL" }
-  (@($head) + $lines) | Set-Content $result
+  $lines | ForEach-Object { Write-Host $_ }
+  if ($ok) { Write-Host "RESULT: PASS" } else { Write-Host "RESULT: FAIL" }
   exit $(if ($ok) { 0 } else { 1 })
 }
+trap { Restore-KitObsWebsocket $kit.Obs; Write-Host "FAIL: $_"; Write-Host "RESULT: FAIL"; exit 1 }
 
-if (!(Test-Path $dll)) { Finish $false @("rws-preflight.dll not found: $dll") }
+if (!(Test-Path $dll)) { Finish $false @("rws-stream-kit.dll not found: $dll") }
 
-# 1. portable OBS (first run only, normally already made by test-load.ps1)
-if (!(Test-Path (Join-Path $obs "bin\64bit\obs64.exe"))) {
-  if (!(Test-Path (Join-Path $src "bin\64bit\obs64.exe"))) { Finish $false @("no source portable OBS at $src") }
-  robocopy $src $obs /E /MT:16 /NFL /NDL /NJH /NJS /NP | Out-Null
-  if ($LASTEXITCODE -ge 8) { Finish $false @("robocopy of portable OBS failed, exit $LASTEXITCODE") }
-  New-Item -ItemType File -Force (Join-Path $obs "portable_mode.txt") | Out-Null
-}
-
-# 2. install plugin (and make sure Multistream is not in this copy)
-$pbin = Join-Path $obs "obs-plugins\64bit"
-$pdat = Join-Path $obs "data\obs-plugins\rws-preflight\locale"
-Remove-Item (Join-Path $pbin "rws-multistream.*") -Force -ErrorAction SilentlyContinue
-New-Item -ItemType Directory -Force $pdat | Out-Null
-Copy-Item $dll $pbin -Force
-if (Test-Path $pdb) { Copy-Item $pdb $pbin -Force }
-Copy-Item (Join-Path $root "data\locale\en-US.ini") $pdat -Force
+# 1+2. portable OBS, and exactly ONE plugin DLL (Kit)
+Initialize-KitPortableObs $obs
+# The previous harness's OBS may still be shutting down: wait for it, never kill it.
+if (!(Wait-KitObsExit (Join-Path $obs "bin\64bit\obs64.exe") 30)) { Finish $false @("a testbed obs64.exe ($obs) is still running; not touching it") }
+# exactly ONE plugin DLL: rws-stream-kit.dll (+pdb) and its locale; the old standalone DLLs and data folders are removed first
+Install-KitPlugin $kit | ForEach-Object { Write-Host $_ }
+if ($NoWebsocket) { Disable-KitObsWebsocket $obs; Write-Host "obs-websocket.dll renamed away for this run (restored afterwards)" }
 
 # fresh throwaway config every run
-if (Test-Path $cfg) { Remove-Item -Recurse -Force $cfg }
+Clear-KitConfig $cfg
 New-Item -ItemType Directory -Force $prof | Out-Null
 New-Item -ItemType Directory -Force (Join-Path $cfg "basic\scenes") | Out-Null
 
@@ -85,7 +83,7 @@ Set-Content (Join-Path $cfg "global.ini") $ini -Encoding UTF8
 Set-Content (Join-Path $cfg "user.ini") $ini -Encoding UTF8
 
 # obs-websocket server off in the test copy (never clash with a real OBS on the usual port).
-# The in-process vendor API still works, which is what the plugin uses.
+# (Pre-Flight asks Multistream directly, in-process; it does not use obs-websocket at all.)
 $wsDir = Join-Path $cfg "plugin_config\obs-websocket"
 New-Item -ItemType Directory -Force $wsDir | Out-Null
 Set-Content (Join-Path $wsDir "config.json") '{"alerts_enabled":false,"auth_required":false,"first_load":false,"server_enabled":false,"server_password":"","server_port":4466}' -Encoding UTF8
@@ -135,13 +133,13 @@ $plugCfg = Join-Path $cfg "plugin_config\rws-preflight"
 New-Item -ItemType Directory -Force $plugCfg | Out-Null
 $settings = '{"setup_done":true,"use_main_stream":true,"use_multistream":true,"mic_uuid":"' + $uMic + '","start_scene_uuid":"' + $uStart + '","record_intent":false,"check_updates":false}'
 Set-Content (Join-Path $plugCfg "settings.json") $settings -Encoding UTF8
+# Kit: pre-existing shared update preference (OFF) and an In-Flight settings file next to Pre-Flight's
+Write-KitSeedSettings $cfg @("kit", "inflight")
 
 # 4. run OBS
 $env:RWS_PREFLIGHT_TEST = "1"
-$exeDir = Join-Path $obs "bin\64bit"
-$proc = Start-Process (Join-Path $exeDir "obs64.exe") -WorkingDirectory $exeDir -PassThru -ArgumentList @(
-  "--portable", "--multi", "--profile", "PreflightState", "--collection", "PreflightState",
-  "--disable-updater", "--disable-missing-files-check")
+$proc = Start-KitObs $obs "PreflightState" "PreflightState"
+$visible = @()
 $obsPid = $proc.Id
 $text = ""
 $log = $null
@@ -168,13 +166,29 @@ try {
   try {
     $p = Get-Process -Id $obsPid -ErrorAction SilentlyContinue
     if ($p -and -not $p.HasExited) {
-      [void]$p.CloseMainWindow()
+      [void](Send-KitWmClose $p)
       if (!$p.WaitForExit(15000)) { Stop-Process -Id $obsPid -Force -ErrorAction SilentlyContinue }
     }
   } catch { }
   Remove-Item Env:\RWS_PREFLIGHT_TEST -ErrorAction SilentlyContinue
 }
 
+# Kit assertions (new with the merge): read after OBS has exited, so the saved dock state is final
+[void](Wait-KitObsExit (Join-Path $obs "bin\64bit\obs64.exe") 20)
+Restore-KitObsWebsocket $obs
+$final = Get-KitLogText $cfg
+$visible = @(Stop-KitWindowWatch)   # background sampler (every 250 ms from OBS start through exit)
+$kc = @()
+$kc += Test-KitLoadLog $final $cfg @("multistream", "preflight", "inflight") -NoVendor:$NoWebsocket
+$kc += Test-KitUpdateNotice $final
+$kc += Test-KitSeedLoaded $final @("inflight")
+$kc += New-KitCheck ($final -match '\[rws-preflight\] state Setup=Hidden') "seeded Pre-Flight settings were loaded: 'state Setup=Hidden' (setup_done=true; default without settings is Amber)"
+$kc += Test-KitSeedSettings $cfg @("kit", "inflight")
+$kc += Test-KitHidden $visible
+$kc += Test-KitClosePath
+$kc += New-KitCheck ($proc.HasExited -and $proc.ExitCode -eq 0) "OBS exited cleanly on WM_CLOSE (exit code $(if ($proc.HasExited) { $proc.ExitCode } else { 'still running' }))"
+$pfs = Read-KitSeedJson $cfg "preflight"
+$kc += New-KitCheck ($pfs -ne $null -and $pfs.setup_done -eq $true -and $pfs.mic_uuid -eq $uMic -and $pfs.start_scene_uuid -eq $uStart) "Pre-Flight settings.json intact after exit (setup_done, mic and start scene still the seeded ones)"
 $all = @($text -split "`r?`n")
 $plug = @($all | Where-Object { $_ -match '\[rws-preflight\]' })
 $stateLines = @($plug | Where-Object { $_ -match '\] state ' })
@@ -190,7 +204,7 @@ $mic   = Last-State "MicMuted"
 $scene = Last-State "Scene"
 $multi = Last-State "Multistream"
 $perf  = Last-State "Performance"
-$threadOk = ($plug | Where-Object { $_ -match 'multistream-probe ui-thread-free' }).Count -gt 0
+$threadOk = ($plug | Where-Object { $_ -match 'multistream-probe direct-bridge' }).Count -gt 0
 $leaks = @($plug | Where-Object { $_ -match '(?i)key' -or $_ -match 'rtmp://' })
 
 # The mic must really be matched: Red because it is MUTED, not Red because it is "missing".
@@ -205,18 +219,29 @@ $checks += "MicMuted message contains 'muted' (not 'missing')=$micMsgOk : $micMs
 $checks += "Test Mic uuid present in the collection OBS saved back=$savedOk (want True)"
 $checks += "MicMuted=$mic (want Red)"
 $checks += "Scene=$scene (want Green)"
-$checks += "Multistream=$multi (want Amber)"
+# CHANGED with the merge (was: Multistream=Amber, "wasn't found"): Multistream is now part of the same DLL, so Pre-Flight
+# finds it. It has no destinations in this fixture, so the light is Red with the "none turned on" message.
+$msgMs = @($plug | Where-Object { $_ -match 'message Multistream: ' })
+$msMsg = if ($msgMs.Count -gt 0) { $msgMs[-1] } else { "" }
+# CHANGED again (direct bridge): with obs-websocket removed Multistream is still found through the in-process bridge, so
+# -NoWebsocket expects the same Red / "none turned on" as the normal run (it used to expect Amber "wasn't found").
+$multiWant = "Red"
+$msMsgOk = $msMsg -match 'No Multistream destinations are turned on'
+$checks += "Multistream=$multi (want ${multiWant}: found through the in-process bridge$(if ($NoWebsocket) { ', even with no obs-websocket' }), no destination turned on)"
+$checks += "Multistream message (no destinations are turned on)=$msMsgOk : $msMsg"
 $checks += "Performance=$perf (want Green or Amber)"
-$checks += "ui-thread-free line=$threadOk"
+$checks += "direct-bridge line (no worker thread)=$threadOk"
 $checks += "key/rtmp lines from rws-preflight=$($leaks.Count) (want 0)"
 
-$ok = ($mic -eq "Red") -and $micMsgOk -and $savedOk -and ($scene -eq "Green") -and ($multi -eq "Amber") -and
+$ok = ($mic -eq "Red") -and $micMsgOk -and $savedOk -and ($scene -eq "Green") -and ($multi -eq $multiWant) -and $msMsgOk -and
       (($perf -eq "Green") -or ($perf -eq "Amber")) -and $threadOk -and ($leaks.Count -eq 0) -and
-      $alive -and -not $failure
+      $alive -and -not $failure -and (Test-KitChecksOk $kc)
 
 $lines = @("pid=$obsPid still_running_at_check=$alive", "log=$(if ($log) { $log.FullName } else { 'NONE' })")
 if ($failure) { $lines += "error during check: $failure" }
 $lines += $checks
+$lines += "--- Kit checks (one DLL, three tools, update notice, seeded settings) ---"
+$lines += Get-KitCheckLines $kc
 $lines += "--- rws-preflight log lines ---"
 $lines += $plug
 Finish $ok $lines

@@ -64,6 +64,10 @@ QString effectiveServer(const QString &raw, QString *note)
 }
 } // namespace
 
+namespace {
+std::atomic<uint64_t> g_outputSerial{0}; // process-wide, see OutputRunner::outputSerial()
+}
+
 OutputRunner::OutputRunner(QObject *parent) : QObject(parent) {}
 
 OutputRunner::~OutputRunner()
@@ -197,6 +201,7 @@ bool OutputRunner::start(const Destination &d, const QString &key, QString *erro
 	obs_output_set_video_encoder(output, venc);
 	obs_output_set_audio_encoder(output, aenc, 0);
 	obs_output_set_reconnect_settings(output, 0, 0); // see the note at the top
+	serial = ++g_outputSerial;
 	connectSignals();
 
 	lastBytes = 0;
@@ -373,6 +378,7 @@ void OutputRunner::release()
 		obs_output_release(output);
 		output = nullptr;
 	}
+	serial = 0;
 	++gen; // anything still queued from that output is now stale
 	if (venc) {
 		obs_encoder_release(venc);

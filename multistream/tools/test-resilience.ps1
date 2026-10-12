@@ -13,7 +13,7 @@
                       retried: retrying a broken URL or key only hammers a
                       platform.
 
-  Run from red-warden-multistream:  powershell -ExecutionPolicy Bypass -File tools\test-resilience.ps1
+  Run from the Multistream folder:  powershell -ExecutionPolicy Bypass -File tools\test-resilience.ps1
 #>
 param(
   [string]$Config = "RelWithDebInfo",
@@ -24,33 +24,32 @@ param(
 )
 $ErrorActionPreference = "Stop"
 $root   = Split-Path -Parent $PSScriptRoot
-$bed    = Join-Path $root ".testbed"
-$obs    = Join-Path $bed "obs"
+$kitTools = Join-Path (Split-Path -Parent $root) "plugin\tools"                                          # published layout: <repo>\plugin
+if (!(Test-Path $kitTools)) { $kitTools = Join-Path (Split-Path -Parent $root) "red-warden-stream-kit\plugin\tools" }   # development layout
+. (Join-Path $kitTools "kit-testbed.ps1")
+$kit    = Get-KitTestbed $Config
+$bed    = $kit.Bed
+$obs    = $kit.Obs
 $cfg    = Join-Path $obs "config\obs-studio"
 $prof   = Join-Path $cfg "basic\profiles\MultistreamTest"
-$dll    = Join-Path $root "build_x64\$Config\rws-multistream.dll"
+$dll    = $kit.Dll
 $ports  = 19350, 19351, 19352          # 19353 deliberately has no receiver
 $ids    = "00000000-beac-0000-0000-000000000001", "00000000-beac-0000-0000-000000000002",
           "00000000-beac-0000-0000-000000000003", "00000000-beac-0000-0000-000000000004"
 
 if (!(Test-Path $dll)) { throw "Build first: $dll not found" }
 
-# 1. portable OBS
-if (!(Test-Path (Join-Path $obs "bin\64bit\obs64.exe"))) {
-  Write-Host "Copying OBS into the testbed (one time)..."
-  robocopy "C:\Program Files\obs-studio" $obs /E /NFL /NDL /NJH /NJS /NP | Out-Null
-  New-Item -ItemType File -Force (Join-Path $obs "portable_mode.txt") | Out-Null
-}
+# 1. portable OBS (first run: copied from the Multistream testbed copy, else from C:\Program Files read-only)
+Initialize-KitPortableObs $obs
+# The previous harness's OBS may still be shutting down: wait for it, never kill it.
+if (!(Wait-KitObsExit (Join-Path $obs "bin\64bit\obs64.exe") 30)) { throw "a testbed obs64.exe ($obs) is still running; not touching it" }
 
-# 2. install plugin
-$pbin = Join-Path $obs "obs-plugins\64bit"
-$pdat = Join-Path $obs "data\obs-plugins\rws-multistream\locale"
-New-Item -ItemType Directory -Force $pdat | Out-Null
-Copy-Item $dll $pbin -Force
-Copy-Item (Join-Path $root "data\locale\en-US.ini") $pdat -Force
+# 2. install exactly ONE plugin DLL: rws-stream-kit.dll (+pdb) and its locale. The old standalone
+#    rws-multistream / rws-preflight / rws-inflight dlls and data folders are removed from the copy first.
+Install-KitPlugin $kit | ForEach-Object { Write-Host $_ }
 
 # fresh throwaway config every run
-if (Test-Path $cfg) { Remove-Item -Recurse -Force $cfg }
+Clear-KitConfig $cfg
 New-Item -ItemType Directory -Force $prof | Out-Null
 New-Item -ItemType Directory -Force (Join-Path $cfg "basic\scenes") | Out-Null
 
@@ -188,10 +187,7 @@ if ($Snapshots) {
 } else { Remove-Item Env:RWS_MULTISTREAM_SNAPSHOT -ErrorAction SilentlyContinue }
 
 # 5. run OBS
-$exeDir = Join-Path $obs "bin\64bit"
-$proc = Start-Process (Join-Path $exeDir "obs64.exe") -WorkingDirectory $exeDir -PassThru -ArgumentList @(
-  "--portable", "--multi", "--profile", "MultistreamTest", "--collection", "MultistreamTest",
-  "--disable-updater", "--disable-missing-files-check")
+$proc = Start-KitObs $obs "MultistreamTest" "MultistreamTest"   # hidden, no focus steal
 $t0 = Get-Date
 function Wait-Until($sec) { $left = $sec - ((Get-Date) - $t0).TotalSeconds; if ($left -gt 0) { Start-Sleep -Milliseconds ([int]($left * 1000)) } }
 # Start offline for a while (the "before going live" view), then stream.
@@ -207,8 +203,7 @@ Wait-Until $Seconds
 Write-Host "Pressing Stop Streaming via obs-websocket..."
 try { Invoke-ObsWs @("StopStream") | Out-Null } catch { Write-Warning "websocket: $_" }
 Start-Sleep -Seconds $(if ($Snapshots) { 7 } else { 5 })  # the after-stream snapshot is taken 4 s after stopping
-[void]$proc.CloseMainWindow()
-if (!$proc.WaitForExit(20000)) { Write-Warning "OBS did not exit cleanly; killing"; $proc.Kill() }
+[void](Close-KitObs $proc)   # hidden OBS: WM_CLOSE to its window (CloseMainWindow needs a visible one)
 Start-Sleep -Seconds 2
 $sinks.Values | ForEach-Object { if (!$_.HasExited) { $_.Kill() } }
 
@@ -220,6 +215,8 @@ $text = Get-Content $log.FullName -Raw
 Write-Host "`n--- the plugin timeline ---"
 Select-String -Path $log.FullName -Pattern "\[rws-multistream\]" | ForEach-Object { $_.Line }
 $fail = $false
+Write-Host "`n--- Kit load checks (one DLL, one module, one vendor, one dock) ---"
+if (!(Write-KitChecks (Test-KitLoadLog $text $cfg))) { $fail = $true }
 function FrameCount($f) { if (!(Test-Path $f)) { return 0 }; [int](ffprobe -v error -count_packets -select_streams v -show_entries stream=nb_read_packets -of csv=p=0 $f) }
 function Attempts($port) { ([regex]::Matches($text, "Connecting to RTMP URL rtmp://127\.0\.0\.1:$port/")).Count }
 
@@ -262,6 +259,32 @@ else {
   if (!($okShared -and $okOwn -and $okDead -and $okBad -and $okFb)) { Write-Host "  FAIL: the stream report is wrong"; $fail = $true }
 }
 
+# Pre-existing settings: plugin_config\rws-multistream\settings.json was seeded above (upload 7 Mbps, manual).
+# The Kit build must read it from the same folder and leave it alone. Read: the first (offline) dock snapshot says
+# "Needs about N Mbps of your 7 Mbps upload. That's more than your connection can reliably carry" in the error
+# colour (without the setting it would be the grey "Test my upload speed" hint), so its note band (below the header,
+# above the destinations, scaled to the snapshot) must hold error-red pixels.
+Write-Host "`n--- pre-existing settings (plugin_config\rws-multistream\settings.json) ---"
+$sj = Join-Path $pcfg "settings.json"
+$sOk = (Test-Path $sj) -and ((Get-Content $sj -Raw | ConvertFrom-Json).upload_mbps -eq 7)
+Write-Host "seeded settings.json still intact: $sOk"
+if (!$sOk) { Write-Host "  FAIL: the seeded settings.json was lost or changed"; $fail = $true }
+$snap1 = Join-Path $bed "snapshots\dock-1-w380.png"
+if ($Snapshots -and (Test-Path $snap1)) {
+  Add-Type -AssemblyName System.Drawing
+  $bmp = New-Object Drawing.Bitmap $snap1
+  $red = 0
+  # The hidden OBS can open on any monitor, so the snapshot's scale varies (380 logical px wide = 380 px at 100 %,
+  # ~420 at 110 %, ~490 at 130 %) and the note wraps lower. Scale the band, and skip the left 70 logical px where
+  # the red platform badges sit.
+  $f = $bmp.Width / 380.0
+  $y0 = [int](60 * $f); $y1 = [int](230 * $f); $x0 = [int](70 * $f)
+  for ($y = $y0; $y -le $y1 -and $y -lt $bmp.Height; $y++) { for ($x = $x0; $x -lt $bmp.Width; $x++) {
+    $px = $bmp.GetPixel($x, $y); if ($px.R -gt 200 -and $px.G -lt 130 -and $px.B -lt 130) { $red++ } } }
+  $bmp.Dispose()
+  Write-Host "dock snapshot note band: $red error-red pixels (7 Mbps upload setting read: needs >= 200)"
+  if ($red -lt 200) { Write-Host "  FAIL: the seeded 7 Mbps upload setting did not reach the dock"; $fail = $true }
+} elseif ($Snapshots) { Write-Host "  FAIL: no dock-1-w380.png snapshot to check the seeded setting"; $fail = $true }
 Write-Host ("`nOBS exit code: " + $proc.ExitCode)
 if ($proc.ExitCode -ne 0) { Write-Host "OBS did not shut down cleanly"; $fail = $true }
 if ($fail) { Write-Host "RESULT: FAIL"; exit 1 } else { Write-Host "RESULT: PASS" }

@@ -214,6 +214,11 @@ DestinationRow::DestinationRow(QWidget *parent) : QFrame(parent)
 	pill = new QLabel(this);
 	pill->setTextFormat(Qt::PlainText);
 	status->addWidget(pill, 0, Qt::AlignTop);
+	// Next to LIVE, small and amber: only while the Network light judges this destination's frames bad.
+	dropPill = new QLabel(this);
+	dropPill->setTextFormat(Qt::PlainText);
+	dropPill->setVisible(false);
+	status->addWidget(dropPill, 0, Qt::AlignTop);
 	detail = new QLabel(this);
 	detail->setTextFormat(Qt::PlainText);
 	detail->setWordWrap(true);
@@ -255,6 +260,9 @@ void DestinationRow::setView(const RowView &rv)
 	toggle->setToolTip(rv.enabled ? QStringLiteral("On: goes live whenever OBS is streaming. Click to turn off.")
 				      : QStringLiteral("Off: skipped. Click to turn on."));
 	pill->setText(rv.statusText);
+	dropPill->setText(rv.dropBadge);
+	dropPill->setVisible(!rv.dropBadge.isEmpty());
+	dropPill->setToolTip(QStringLiteral("In-Flight's Network light: this destination is dropping frames (last 30 s)."));
 	detail->setText(rv.statusDetail);
 	detail->setVisible(!rv.statusDetail.isEmpty());
 	meta->setText(rv.meta);
@@ -324,6 +332,10 @@ void DestinationRow::restyle()
 		pill->setStyleSheet(QStringLiteral("color:%1; font-size:12px;").arg(Theme::css(t.muted)));
 		break;
 	}
+	// Amber with dark ink in both themes (white on ember is unreadable); the text carries the meaning, not the colour.
+	dropPill->setStyleSheet(QStringLiteral("background:%1; color:#202020; border-radius:3px; padding:0px 5px;"
+					       " font-size:10px; font-weight:700;")
+					.arg(Theme::css(t.ember)));
 	const QColor detailColor = view.status == Status::Problem ? t.error : t.secondary;
 	detail->setStyleSheet(QStringLiteral("color:%1; font-size:12px;").arg(Theme::css(detailColor)));
 	meta->setStyleSheet(QStringLiteral("color:%1; font-size:11px;").arg(Theme::css(t.muted)));

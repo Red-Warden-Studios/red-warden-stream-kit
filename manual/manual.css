@@ -1,0 +1,133 @@
+:root {
+  --geranium: #C0392B;
+  --ember: #F2A63B;
+  --night: #0A0506;
+  --green: #2E9D5B;
+  --bg: #FFFFFF;
+  --panel: #F5F1F0;
+  --text: #1B1213;
+  --muted: #5E5051;
+  --line: #DDD3D1;
+  --link: #A82F23;
+  --code-bg: #F0E9E7;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0A0506;
+    --panel: #170E0F;
+    --text: #EFE6E4;
+    --muted: #AE9C9A;
+    --line: #35282A;
+    --link: #F2A63B;
+    --code-bg: #221718;
+    --green: #3DBB72;
+  }
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; scroll-padding-top: 1rem; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  line-height: 1.6;
+  font-size: 17px;
+}
+a { color: var(--link); }
+header.top {
+  background: var(--night);
+  color: #EFE6E4;
+  border-bottom: 3px solid var(--geranium);
+  padding: 1rem 16px;
+}
+header.top .wrap { display: flex; align-items: center; gap: 0.9rem; }
+header.top img { width: 56px; height: 56px; }
+header.top h1 { margin: 0; font-size: 1.4rem; line-height: 1.2; }
+header.top p { margin: 0.1rem 0 0; color: #C9B9B6; font-size: 0.95rem; }
+.wrap { max-width: 1040px; margin: 0 auto; }
+.layout { display: block; padding: 0 16px; }
+nav.toc {
+  position: static;
+  background: var(--bg);
+  border-bottom: 1px solid var(--line);
+  margin: 0 -16px;
+  padding: 0.5rem 16px;
+}
+nav.toc ul { list-style: none; margin: 0; padding: 0; display: flex; gap: 0.35rem 0.9rem; flex-wrap: wrap; font-size: 0.9rem; }
+nav.toc a { text-decoration: none; }
+nav.toc a:hover { text-decoration: underline; }
+main { padding-bottom: 4rem; min-width: 0; }
+section { padding-top: 1.5rem; }
+h2 { margin: 0 0 0.6rem; font-size: 1.6rem; border-bottom: 2px solid var(--geranium); padding-bottom: 0.25rem; }
+h3 { margin: 1.5rem 0 0.4rem; font-size: 1.15rem; }
+p, ul, ol, table, figure { margin: 0.6rem 0; }
+li { margin: 0.25rem 0; }
+code, kbd {
+  background: var(--code-bg);
+  padding: 0.05em 0.35em;
+  border-radius: 4px;
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  font-size: 0.92em;
+  overflow-wrap: anywhere;
+}
+pre {
+  background: var(--code-bg);
+  padding: 0.8rem;
+  border-radius: 6px;
+  overflow-x: auto;
+  max-width: 100%;
+  font-size: 0.88rem;
+}
+pre code { background: none; padding: 0; }
+img { max-width: 100%; height: auto; }
+figure { text-align: left; }
+figure img { border: 1px solid var(--line); border-radius: 6px; max-width: min(100%, 360px); }
+figcaption { color: var(--muted); font-size: 0.9rem; margin-top: 0.3rem; }
+.tablewrap { overflow-x: auto; max-width: 100%; }
+table { border-collapse: collapse; width: 100%; font-size: 0.95rem; }
+th, td { border: 1px solid var(--line); padding: 0.4rem 0.6rem; text-align: left; vertical-align: top; }
+th { background: var(--panel); }
+.note {
+  background: var(--panel);
+  border-left: 4px solid var(--ember);
+  padding: 0.6rem 0.9rem;
+  border-radius: 4px;
+}
+.sw {
+  display: inline-block;
+  width: 0.95em;
+  height: 0.95em;
+  border-radius: 50%;
+  vertical-align: -0.1em;
+  margin-right: 0.35em;
+  border: 1px solid rgba(0,0,0,0.25);
+}
+.sw.green { background: var(--green); }
+.sw.amber { background: var(--ember); }
+.sw.red { background: var(--geranium); }
+.sw.grey { background: transparent; border: 2px solid var(--muted); }
+.sw.unknown { background: transparent; border: 2px dashed var(--muted); }
+.lights { list-style: none; padding: 0; }
+.lights li { padding: 0.35rem 0; border-bottom: 1px solid var(--line); }
+footer { border-top: 1px solid var(--line); padding: 1rem 16px 2rem; color: var(--muted); font-size: 0.9rem; }
+@media (min-width: 900px) {
+  .layout { display: grid; grid-template-columns: 210px 1fr; gap: 2rem; }
+  nav.toc {
+    position: sticky;
+    top: 1rem;
+    align-self: start;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    margin: 1.5rem 0 0;
+    padding: 0.8rem;
+    max-height: calc(100vh - 2rem);
+    overflow-y: auto;
+  }
+  nav.toc ul { display: block; font-size: 0.95rem; }
+  nav.toc li { margin: 0.2rem 0; }
+}
+
+/* Keep long code and links inside the page at phone width. */
+main, section, .content { min-width: 0; }
+pre { max-width: 100%; }
+a { overflow-wrap: anywhere; }

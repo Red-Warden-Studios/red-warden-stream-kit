@@ -1,0 +1,541 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Red Warden Stream Kit Manual</title>
+<meta name="description" content="User manual for Red Warden Stream Kit 1.1.0: Multistream, Pre-Flight and In-Flight in one OBS dock.">
+<link rel="icon" href="img/logo.png">
+<link rel="stylesheet" href="manual.css">
+</head>
+<body>
+<header class="top">
+  <div class="wrap">
+    <img src="img/logo.png" alt="Red Warden logo" width="56" height="56">
+    <div>
+      <h1>Red Warden Stream Kit</h1>
+      <p>User manual for version 1.1.0</p>
+    </div>
+  </div>
+</header>
+
+<div class="wrap layout">
+<nav class="toc" aria-label="Contents">
+  <ul>
+    <li><a href="#start">Get started</a></li>
+    <li><a href="#dock">The dock</a></li>
+    <li><a href="#multistream">Multistream</a></li>
+    <li><a href="#preflight">Pre-Flight</a></li>
+    <li><a href="#inflight">In-Flight</a></li>
+    <li><a href="#levels">Levels</a></li>
+    <li><a href="#network">Network light</a></li>
+    <li><a href="#settings">Settings</a></li>
+    <li><a href="#hotkeys">Hotkeys</a></li>
+    <li><a href="#automation">Automation</a></li>
+    <li><a href="#updates">Updates</a></li>
+    <li><a href="#privacy">Privacy</a></li>
+    <li><a href="#troubleshooting">Troubleshooting</a></li>
+    <li><a href="#uninstall">Uninstall</a></li>
+    <li><a href="#about">About</a></li>
+  </ul>
+</nav>
+
+<main>
+
+<section id="start">
+<h2>Get started</h2>
+<p>Red Warden Stream Kit is a plugin for OBS Studio. It puts three tools in one dock named <strong>RW Stream Kit</strong>: <strong>Multistream</strong>, <strong>Pre-Flight</strong> and <strong>In-Flight</strong>. It needs OBS Studio 31.1 or newer on 64-bit Windows.</p>
+
+<h3>Install with the installer</h3>
+<ol>
+  <li>Close OBS.</li>
+  <li>Run <code>RedWardenStreamKit-&lt;version&gt;-Setup.exe</code>.</li>
+  <li>Start OBS.</li>
+  <li>Open the <strong>Docks</strong> menu and choose <strong>RW Stream Kit</strong>.</li>
+</ol>
+<p>The first time, the Kit puts the dock in the right-hand area. If OBS already has a saved place for the dock, the Kit leaves it there. You can drag it anywhere afterward.</p>
+
+<h3>Install from the zip</h3>
+<ol>
+  <li>Close OBS.</li>
+  <li>If you have Kit 1.0.x or the standalone Multistream, delete the <code>rws-multistream</code>, <code>rws-preflight</code> and <code>rws-inflight</code> folders from <code>C:\ProgramData\obs-studio\plugins\</code>. The Kit replaces them.</li>
+  <li>Do not delete OBS's <code>plugin_config</code> folder. It holds your settings.</li>
+  <li>Copy the <code>rws-stream-kit</code> folder into <code>C:\ProgramData\obs-studio\plugins\</code>. Create the <code>plugins</code> folder if it does not exist. For a portable OBS, use that copy's own <code>plugins</code> folder.</li>
+  <li>Start OBS and open <strong>Docks</strong> &gt; <strong>RW Stream Kit</strong>.</li>
+</ol>
+<p>Do not leave old tool folders beside the new one.</p>
+
+<h3>Upgrading from Kit 1.0.x</h3>
+<p>Kit 1.0.x had two separate docks (Multistream and Pre-Flight). In 1.1.0 they become one dock, and In-Flight is new. Your destinations, stream keys, reports, hotkeys and settings carry over. Run the new installer over the old install. The installer removes the files of the older plugins it replaces and touches nothing else.</p>
+
+<h3>Your first stream</h3>
+<ol>
+  <li>Click <strong>Add destination</strong> and add each place you stream to. See <a href="#multistream">Multistream</a>.</li>
+  <li>In the <strong>Pre-Flight</strong> stage, click <strong>Set up Pre-Flight</strong> and tell it how you stream. See <a href="#preflight">Pre-Flight</a>.</li>
+  <li>Click <strong>Check &amp; Go Live</strong>.</li>
+  <li>The dock switches to <strong>In-Flight</strong> by itself when you go live. See <a href="#inflight">In-Flight</a>.</li>
+</ol>
+</section>
+
+<section id="dock">
+<h2>The dock</h2>
+<p>The dock shows one stage at a time. The stage strip at the top has <strong>Pre-Flight</strong> and <strong>In-Flight</strong>. A stage appears in the strip only if its tool is on. <strong>Multistream</strong> stays pinned above whichever stage you are looking at.</p>
+<figure>
+  <img src="img/dock-pre-flight.png" alt="The RW Stream Kit dock in the Pre-Flight stage, with Multistream on top and the Pre-Flight checks below" width="360" height="1094" loading="eager">
+  <figcaption>The dock in the Pre-Flight stage.</figcaption>
+</figure>
+
+<h3>Stage changes</h3>
+<ul>
+  <li>When the stream goes live, the dock switches to <strong>In-Flight</strong>. Turn this off with <strong>Switch to In-Flight when I go live</strong> in the Kit settings.</li>
+  <li>Clicking <strong>Done</strong> in Pre-Flight switches to In-Flight and stands by. It does nothing while you are live or if In-Flight is off.</li>
+  <li>Click a stage in the strip to look at it. This is only a peek. The next time the stream goes live, the dock moves to In-Flight again.</li>
+  <li>The Kit counts a stream as ended only after OBS's stream and every Multistream destination have all been off the air for 10 seconds in a row. A short drop and reconnect does not end the session.</li>
+</ul>
+
+<h3>Controls at the top</h3>
+<ul>
+  <li><strong>Show all tools</strong>: stacks every tool in one list instead of one stage at a time. In this view Pre-Flight and In-Flight each get a header you can collapse.</li>
+  <li><strong>Reset</strong>: starts fresh. It clears the Pre-Flight checks and the In-Flight session log. Your settings stay. It is disabled while a stream session is active and works whenever none is, including before your first stream.</li>
+  <li><strong>?</strong>: opens this manual.</li>
+  <li>The gear: opens <strong>Kit settings</strong>. See <a href="#settings">Settings</a>.</li>
+  <li>While live, the strip shows <strong>LIVE</strong> and a running time such as <code>LIVE 0:42:10</code>.</li>
+</ul>
+<p>The Multistream section is collapsible, and the Kit remembers whether you collapsed it.</p>
+
+<h3>After the stream</h3>
+<p>This card is part of In-Flight, so it does not appear if In-Flight is switched off. When the stream ends, a <strong>Stream ended</strong> card shows how long you were on air and how many entries are in the session log. Click <strong>Start fresh for the next stream</strong> to clear the session log and the Pre-Flight checks. Your settings stay.</p>
+
+<h3>Needs attention</h3>
+<p>When In-Flight has a red light you have not acknowledged or snoozed, the dock title shows a dot before its name. The taskbar button flashes once for about 3 seconds for each new red light.</p>
+</section>
+
+<section id="multistream">
+<h2>Multistream</h2>
+<p>Multistream sends your one OBS stream to more than one place. Each place is a destination. Each destination whose switch is on goes live when you press OBS's <strong>Start Streaming</strong>. A destination that is switched off is skipped.</p>
+
+<h3>Add a destination</h3>
+<ol>
+  <li>Click <strong>Add destination</strong>.</li>
+  <li>Pick a <strong>Platform</strong>: Twitch, YouTube, Kick, TikTok Live, Facebook Live, Rumble, X or Custom RTMP. The server and key boxes show hints for that platform.</li>
+  <li>Give it a <strong>Name</strong>, a <strong>Server URL</strong> and a <strong>Stream key</strong>. The URL must start with <code>rtmp://</code> or <code>rtmps://</code>. SRT is not supported.</li>
+  <li>Choose the encoding, then save.</li>
+</ol>
+<p>Stream keys are stored in Windows Credential Manager, not in a settings file. When you edit a destination that has a saved key, leave the key box blank to keep it. <strong>Remove</strong> deletes the destination and its saved key.</p>
+<p>Do not paste the key into the server URL. The Kit refuses a key that is part of the URL.</p>
+<p>New destinations are on. Imported ones are off until you switch them on.</p>
+
+<h3>Encoding</h3>
+<ul>
+  <li><strong>Share OBS's stream encoder</strong> (recommended): no extra GPU or CPU load.</li>
+  <li><strong>Separate encoder for this destination</strong>: choose an Encoder, Video bitrate, Resolution, Audio bitrate and Audio track for this one destination.</li>
+</ul>
+<p>The Kit reads OBS's service list and shows advice when your settings are outside a platform's limits for bitrate, keyframe interval, height, frame rate or audio. If the shared encoder's keyframe interval is 0 or above 4, you will see: set Keyframe Interval to 2 s in OBS Settings &gt; Output &gt; Streaming.</p>
+
+<h3>What a card tells you</h3>
+<div class="tablewrap"><table>
+<tr><th>Status</th><th>Meaning</th></tr>
+<tr><td><strong>Ready</strong></td><td>Goes live with Start Streaming (when its switch is on).</td></tr>
+<tr><td><strong>Off</strong></td><td>The destination's switch is off. It is skipped.</td></tr>
+<tr><td><strong>Waiting</strong></td><td>It joins as soon as OBS's stream is sending video. It waits up to 20 seconds.</td></tr>
+<tr><td><strong>Connecting</strong></td><td>Opening the connection.</td></tr>
+<tr><td><strong>Connected</strong></td><td>Waiting for a keyframe from OBS.</td></tr>
+<tr><td><strong>LIVE</strong></td><td>Sending. The card shows the rate in Mbps and any dropped frames.</td></tr>
+<tr><td><strong>Reconnecting</strong></td><td>The connection dropped. Attempt N of 10.</td></tr>
+<tr><td><strong>Retrying in m:ss</strong></td><td>Waiting for the next try. A <strong>Retry</strong> button tries now.</td></tr>
+<tr><td><strong>Paused</strong></td><td>Protecting your platform account from too many connections. The card shows when the next try is.</td></tr>
+<tr><td><strong>Stopping</strong></td><td>Closing the connection.</td></tr>
+</table></div>
+<p>If a platform rejects the key or the URL is bad, the Kit does not keep retrying. The card says to check the destination's settings with <strong>Edit</strong>.</p>
+<p>A badge such as <strong>0.5% DROPPED</strong> appears on a live card when that destination is losing frames.</p>
+
+<h3>Reconnects and the connection budget</h3>
+<p>If a live destination drops, the Kit retries it on its own. The first tries come at 5, 10, 20 and 40 seconds, then every 60 seconds, for 10 tries. After that it slows down to 30 seconds, 60 seconds, then every 2 minutes. Each wait varies by up to 20% so retries do not bunch up. If a destination sends no data for 6 seconds (20 seconds before its first frame), the Kit restarts it.</p>
+<p>Platforms can block an account that connects too often. So each destination has a budget: 12 attempts in 10 minutes and 40 in an hour. Every attempt counts: the first connect, reconnects, restarts, the <strong>Retry</strong> button and the Twitch bandwidth test. If a destination stalls 3 times in 10 minutes, retries slow to at least 5 minutes apart. The budget always wins over the schedule, and it is remembered until you close OBS, even if you stop and start the stream. When the budget runs out the card shows <strong>Paused</strong> with a countdown.</p>
+<p>Pressing <strong>Stop Streaming</strong> in OBS cancels all pending retries.</p>
+
+<h3>Upload speed</h3>
+<p>Open the <strong>...</strong> menu on the Multistream header for upload-speed tools.</p>
+<ul>
+  <li><strong>Test my upload speed</strong>: asks first, then measures for about 10 seconds against Cloudflare's speed server. It cannot run while you are live.</li>
+  <li><strong>Enter my upload speed...</strong>: type a number from 0.5 to 100000 Mbps if you already know it.</li>
+  <li><strong>Forget my upload speed</strong>: clears it.</li>
+</ul>
+<p>With a speed saved, the header shows how much upload your destinations need, with about 5% overhead added. The note turns amber above 75% of your speed, because streams start dropping frames above about that point. It turns red above 90%: that is more than your connection can reliably carry. Turn a platform off or lower its bitrate.</p>
+
+<h3>Twitch bandwidth test</h3>
+<p>In a Twitch destination, <strong>Test bandwidth without going live</strong> opens the <strong>Twitch bandwidth test</strong> dialog. It runs for about 20 seconds with Twitch's test mode, so nothing goes on air. Use <strong>Test again</strong> or <strong>Stop test</strong>. The test counts toward the connection budget.</p>
+
+<h3>Stream report</h3>
+<p>After a stream, the Multistream section shows a one-line recap that starts with "Last stream:" and a <strong>See report</strong> link. The <strong>Stream report</strong> dialog has <strong>Copy report</strong> and <strong>Open past reports</strong>. The Kit keeps the last 50 reports. You can also open the latest from the <strong>...</strong> menu with <strong>Last stream report</strong>.</p>
+
+<h3>Import from another plugin</h3>
+<p>Choose <strong>Import from obs-multi-rtmp or Aitum...</strong> from the <strong>...</strong> menu. An empty dock also offers this if it finds saved destinations. The <strong>Import destinations</strong> dialog lists what it found. Only RTMP targets come across. SRT targets are skipped. Imported destinations are off.</p>
+
+<h3>Where it is saved</h3>
+<p>Destinations are saved per OBS profile, in <code>rws-multistream.json</code> inside the profile folder. Your upload speed and past reports are in OBS's <code>plugin_config\rws-multistream</code> folder.</p>
+</section>
+
+<section id="preflight">
+<h2>Pre-Flight</h2>
+<p>Pre-Flight checks your setup before you go live. Each check has a light. <span class="sw green"></span>Green means fine. <span class="sw amber"></span>Amber means look at it. <span class="sw red"></span>Red means it will probably hurt your stream. A grey <strong>?</strong> means Pre-Flight cannot tell yet.</p>
+<figure>
+  <img src="img/dock-pre-flight-mic-test.png" alt="Pre-Flight with a mic test result showing Loudest and Typical levels" width="360" height="1114" loading="eager">
+  <figcaption>Pre-Flight after a mic test.</figcaption>
+</figure>
+
+<h3>Set it up</h3>
+<p>The first time, a card says Pre-Flight checks your setup before you go live. Click <strong>Set up Pre-Flight</strong>. Later you can change everything with <strong>Settings</strong> in the dock. The <strong>Pre-Flight settings</strong> dialog asks:</p>
+<ul>
+  <li><strong>How do you stream?</strong> OBS's normal Stream button, Red Warden Multistream, or both.</li>
+  <li><strong>Microphone</strong> and <strong>Desktop / game audio</strong>.</li>
+  <li><strong>Starting scene</strong>.</li>
+  <li><strong>I record my streams</strong>.</li>
+  <li><strong>Checks to run</strong>: eight on/off switches.</li>
+  <li><strong>Your checklist</strong>: your own items. Use <strong>Add</strong> and <strong>Remove</strong>.</li>
+  <li><strong>Tell me when an update is available</strong>.</li>
+</ul>
+
+<h3>The checks</h3>
+<div class="tablewrap"><table>
+<tr><th>Check</th><th>What it looks at</th></tr>
+<tr><td><strong>Mic unmuted</strong></td><td>Amber if no mic is chosen. Red if the mic is missing, is not an audio source, or is muted. Green: "Your mic is on."</td></tr>
+<tr><td><strong>Mic test</strong></td><td>You press <strong>Test mic</strong> and talk. See below.</td></tr>
+<tr><td><strong>Desktop audio</strong></td><td>Shown only if you chose a source. Amber if it is missing. Red if it is muted.</td></tr>
+<tr><td><strong>Starting scene</strong></td><td>Amber if none is chosen or the scene is gone. Red if a different scene is live. Green if your starting scene is live. In Studio Mode it checks the program scene.</td></tr>
+<tr><td><strong>Main stream</strong></td><td>Whether OBS's own stream settings are complete. Red if the service is not fully set up or there is no server. Amber if there is no key.</td></tr>
+<tr><td><strong>Multistream</strong></td><td>Amber if Multistream is not installed or found. Red if no destination is on. Green names the destinations that will go live.</td></tr>
+<tr><td><strong>Recording</strong></td><td>Only if you ticked <strong>I record my streams</strong>. Red if the folder is missing, not writable or has under 5 GB free. Amber under 20 GB free, or if OBS is not set to record automatically when streaming.</td></tr>
+<tr><td><strong>OBS keeping up</strong></td><td>Watches OBS for 30 seconds. Before you are live it looks at rendering. While live it also looks at encoding and the network. It shows the worst one. Amber above 0.5% dropped or late frames, red above 2%.</td></tr>
+<tr><td><strong>Your checklist</strong></td><td>Red until you tick every item. Green when all are ticked. Ticks reset when the stream stops.</td></tr>
+</table></div>
+
+<h3>Mic test</h3>
+<p>Press <strong>Test mic</strong>. The button reads <strong>Listening... say something</strong> for 5 seconds. Talk at your normal volume. The test passes if your loudest moment is louder than -30 dB and clearly above the room noise. It then shows two numbers:</p>
+<ul>
+  <li><strong>Loudest</strong>: your highest peak, for example <code>-8.2 dB</code>.</li>
+  <li><strong>Typical</strong>: the average level of the sound that was not silence.</li>
+</ul>
+<p>A silent mic reads <code>-inf</code>. The result clears when you press <strong>Reset</strong>, when the stream stops, when you change scene collection and when you pick another mic.</p>
+
+<h3>Going live</h3>
+<ul>
+  <li><strong>Check &amp; Go Live</strong> runs the checks and starts the stream. While you are live it reads <strong>Live</strong> and is disabled.</li>
+  <li>If something is red, a <strong>Some checks failed</strong> window lists the failures and "Also worth a look". Choose <strong>Go live anyway</strong> or <strong>Cancel</strong>. Cancel is the default.</li>
+  <li>Pre-Flight never blocks OBS's own <strong>Start Streaming</strong> button. If you use it with red checks, a banner says "You went live with problems" and names them. You can dismiss it.</li>
+  <li><strong>Done</strong>: you finished checking. The dock switches to In-Flight and stands by.</li>
+  <li><strong>Levels</strong>: shows or hides the level meters so you can check your mic and sound before you go live. See <a href="#levels">Levels</a>.</li>
+  <li><strong>Settings</strong>: opens the Pre-Flight settings.</li>
+</ul>
+<figure>
+  <img src="img/show-all-tools.png" alt="The RW Stream Kit dock with Show all tools ticked: Multistream, Pre-Flight and In-Flight stacked in one list" width="360" height="1339" loading="lazy">
+  <figcaption>Show all tools: Multistream, Pre-Flight and In-Flight in one list.</figcaption>
+</figure>
+<p>Pre-Flight reads Multistream directly inside OBS. It makes no network connections of its own.</p>
+</section>
+
+<section id="inflight">
+<h2>In-Flight</h2>
+<p>In-Flight watches your stream while you are live. It shows seven lights and a status line. It is live when OBS is streaming, or when any Multistream destination is live or reconnecting.</p>
+<figure>
+  <img src="img/dock-in-flight.png" alt="The In-Flight stage while live on three destinations: Multistream on top, then the status line Watching and six green lights (Rec is off)" width="360" height="681" loading="eager">
+  <figcaption>In-Flight while you are live. Before you go live the lights are empty rings and the status line says Standing by.</figcaption>
+</figure>
+
+<h3>Status line</h3>
+<ul>
+  <li><strong>Standing by</strong>: you are off the air.</li>
+  <li><strong>Watching</strong>: you are live.</li>
+  <li><strong>Checking...</strong>: it cannot tell yet.</li>
+  <li><strong>Stream dropped</strong>: OBS's stream stopped with an error.</li>
+</ul>
+
+<h3>The lights</h3>
+<p>Each light is a circle you can click for details.</p>
+<ul class="lights">
+  <li><span class="sw green"></span><strong>Green</strong>: fine.</li>
+  <li><span class="sw amber"></span><strong>Amber</strong>: check soon.</li>
+  <li><span class="sw red"></span><strong>Red</strong>: failing.</li>
+  <li><span class="sw unknown"></span><strong>Dashed ring</strong>: can't tell yet.</li>
+  <li><span class="sw grey"></span><strong>Grey ring</strong>: off.</li>
+</ul>
+<div class="tablewrap"><table>
+<tr><th>Light</th><th>What it watches</th></tr>
+<tr><td><strong>Mic</strong></td><td>Red at once if the mic is inactive, missing or not an audio source. If it is muted, amber after 20 seconds and red after 60 seconds. If it has had no data for 5 seconds, it shows unknown. Optional: amber when it is very quiet (see Settings).</td></tr>
+<tr><td><strong>Desktop</strong> (Desktop audio)</td><td>Red if the source is missing or muted. Amber after 120 seconds of digital silence.</td></tr>
+<tr><td><strong>Scene</strong></td><td>Watches your holding scenes, such as a "be right back" screen. Amber when you stay on one past its time limit. Red 5 minutes after that. Grey if you set none.</td></tr>
+<tr><td><strong>Rec</strong> (Recording)</td><td>Grey and "Turned off" if you do not record. Red if recording has not started within 60 seconds of going live, or if it stopped. Amber if paused.</td></tr>
+<tr><td><strong>Net</strong> (Network)</td><td>Dropped frames on the main stream and on each Multistream destination. See <a href="#network">Network light</a>.</td></tr>
+<tr><td><strong>PC</strong> (PC keeping up)</td><td>Late frames from rendering and skipped frames from the encoder, over the last 30 seconds. Amber above 0.5%, red above 2%. It reads "Still measuring your PC" while it fills its window.</td></tr>
+<tr><td><strong>Stream</strong></td><td>Green while OBS's own stream is active. If OBS reports an error code when the stream stops, this light stays red with "Stream dropped (code ...)" until you acknowledge it or a new session starts.</td></tr>
+</table></div>
+<p>A bad light clears only after it has been fine for 10 seconds. That stops flicker.</p>
+
+<h3>When a light goes red</h3>
+<p>A new red light flashes once. You can also turn on a sound in the settings. Click the light to see what is wrong, when it began ("Since hh:mm:ss") and what to try. Then:</p>
+<ul>
+  <li><strong>Acknowledge</strong>: you saw it. The badge shows it as acknowledged. A latched stream drop clears.</li>
+  <li><strong>Snooze 10 min</strong>: dims the light and holds back the flash for 10 minutes.</li>
+</ul>
+
+<h3>Session log</h3>
+<p>Click <strong>Session log (N)</strong> to open it. It holds up to 200 lines like <code>hh:mm:ss  Light  started  what</code>. The action word is started, got worse, ended or acknowledged. <strong>Reset</strong> clears it. The log covers the current session only, and there is no copy or export button, so note down anything you need before you press Reset.</p>
+
+<h3>Set it up</h3>
+<p>The first time, a card says In-Flight watches your stream while you are live and asks you to choose your microphone and scenes. Pick one:</p>
+<ul>
+  <li><strong>Copy my choices from Pre-Flight</strong></li>
+  <li><strong>Choose by hand...</strong></li>
+  <li><strong>Set up later</strong></li>
+</ul>
+<p>When Pre-Flight is already set up, In-Flight uses its audio choices automatically and shows the note <strong>Using your audio choices from Pre-Flight.</strong> <strong>Change</strong> opens In-Flight settings, and <strong>x</strong> hides the note.</p>
+<figure>
+  <img src="img/in-flight-preflight-note.png" alt="In-Flight standing by, with the note Using your audio choices from Pre-Flight, a Change link and an x button" width="360" height="779" loading="lazy">
+  <figcaption>The note In-Flight shows after it takes Pre-Flight's audio choices.</figcaption>
+</figure>
+<p>The gear on the In-Flight panel opens <strong>In-Flight settings</strong>. See <a href="#settings">Settings</a>.</p>
+</section>
+
+<section id="levels">
+<h2>Levels</h2>
+<p>Levels shows live meters for your mic, desktop audio and any other sources you add. Open it with the <strong>Levels</strong> button in Pre-Flight, or with the <strong>Levels</strong> header in In-Flight. It starts collapsed. The meters only run while the section is open and on screen, so a closed Levels panel costs nothing.</p>
+<figure>
+  <img src="img/levels-lufs.png" alt="The Levels panel in LUFS mode with true peak and a reference line at -16" width="360" height="259" loading="eager">
+  <figcaption>Levels in LUFS mode with True peak and Reference on.</figcaption>
+</figure>
+
+<h3>dB mode</h3>
+<p>The bar runs from -60 to 0 dBFS. The fill shows the instant peak. It is <span class="sw green"></span>green up to -12, <span class="sw amber"></span>amber above -12 and <span class="sw red"></span>red above -3. A short marker holds the highest peak for 1.5 seconds. <strong>Peak</strong> is the recent peak. <strong>Avg</strong> is a smoothed average over about 0.3 seconds. Silence reads <code>-inf</code>.</p>
+
+<h3>LUFS mode</h3>
+<p>LUFS is loudness as people hear it. Switch with the <strong>dB</strong> / <strong>LUFS</strong> buttons.</p>
+<ul>
+  <li><strong>Now</strong>: the last 0.4 seconds.</li>
+  <li><strong>3s avg</strong>: the last 3 seconds. It shows <code>--</code> until it has enough audio.</li>
+  <li><strong>True peak</strong> (off by default): adds <code>TP x dBTP</code> for each source. Keep it below -1 dBTP.</li>
+  <li><strong>Reference</strong> (off by default): draws a line at a level you choose, from -60 to 0 LUFS. It starts at -16. The Kit never suggests a target. Pick the one your platform or your show uses.</li>
+</ul>
+
+<h3>Comparing sources</h3>
+<p>Lines under the meters compare each source to your mic, for example "Mic/Aux is 6.1 LU over Desktop Audio". They say "level with" when close and "is silent" for a silent source. In dB mode they use dB. In LUFS mode they use LU.</p>
+
+<h3>Add and remove sources</h3>
+<p>Your mic and desktop rows are always shown. Use <strong>+ Add source</strong> to add another audio source. Use the <strong>x</strong> button on a row (<strong>Remove this source from the Levels panel</strong>) to take it off. The Kit remembers the mode, the options and the sources.</p>
+<p>The <strong>?</strong> next to the switch opens this section.</p>
+</section>
+
+<section id="network">
+<h2>Network light</h2>
+<p>The <strong>Net</strong> light judges the main OBS stream and every Multistream destination separately. Each output has its own 30-second window of dropped frames. One bad destination does not hide a good one, and one good one does not hide a bad one.</p>
+<figure>
+  <img src="img/dock-in-flight-network.png" alt="In-Flight with a red Net light: Twitch dropping 8.1 percent of its frames, with a Turn off Twitch button" width="360" height="945" loading="eager">
+  <figcaption>A red Net light naming the destination that is dropping frames.</figcaption>
+</figure>
+<ul>
+  <li><span class="sw amber"></span>A destination that is <strong>reconnecting</strong> is amber. It is not judged for drops while it reconnects.</li>
+  <li><span class="sw amber"></span><span class="sw red"></span>A destination that drops more than 0.5% of its frames is amber. More than 2% is red. You can change both numbers in <strong>Advanced</strong> in the In-Flight settings.</li>
+  <li>The light shows the worst output. Red beats amber. Reconnecting beats dropping. After that, the higher percentage wins.</li>
+  <li><span class="sw unknown"></span>While an output is still measuring and nothing is bad, the light is unknown and the details say it is still measuring the connection.</li>
+</ul>
+<p>Click the light for details. You will see which output is the problem, how much it has dropped, the fix text, and a line such as "Main stream and YouTube are fine". If the worst problem is a Multistream destination, a <strong>Turn off</strong> button for it appears. Use it to drop that destination and keep the rest of the stream going. The incident ends at once and the session log says "ended (turned off)".</p>
+<p>The Multistream cards also show a <strong>DROPPED</strong> badge with the percentage on the destination that is losing frames.</p>
+</section>
+
+<section id="settings">
+<h2>Settings</h2>
+<p>There are three places for settings. <strong>Kit settings</strong> is the gear at the top of the dock. <strong>Pre-Flight settings</strong> is the <strong>Settings</strong> button in Pre-Flight. <strong>In-Flight settings</strong> is the gear on the In-Flight panel.</p>
+
+<h3>Kit settings</h3>
+<p>Click the gear. The window is named "Red Warden Stream Kit - Settings". It has three pages. Click <strong>Save</strong> to keep changes.</p>
+<figure>
+  <img src="img/settings-tools.png" alt="Kit settings, Tools page, with Multistream, Pre-Flight and In-Flight switches" width="400" height="476" loading="eager">
+  <figcaption>Kit settings, Tools page.</figcaption>
+</figure>
+<ul>
+  <li><strong>Tools</strong>: turn off a tool you do not use. An off tool disappears from the dock and does no work at all. Its settings are kept. This takes effect the next time OBS starts. You can switch a tool off only after the stream ends. Here you also find <strong>Switch to In-Flight when I go live</strong>, which is on by default.</li>
+  <li><strong>Updates</strong>: <strong>Tell me when an update is available</strong>. See <a href="#updates">Updates</a>.</li>
+  <li><strong>About</strong>: version and a link to the Kit page.</li>
+</ul>
+
+<h3>In-Flight settings</h3>
+<ul>
+  <li><strong>What to watch</strong>: Microphone, Desktop / game audio, <strong>I record my streams</strong>, and how soon recording must start after you go live (10 to 600 seconds, default 60).</li>
+  <li><strong>Holding scenes</strong>: click <strong>Add a scene</strong>. Give each a label (up to 40 characters) and a limit in minutes (1 to 120, default 5).</li>
+  <li><strong>Lights</strong>: seven check boxes. Clear one to switch that light off.</li>
+  <li><strong>Advanced</strong>: the numbers behind the lights.</li>
+</ul>
+<div class="tablewrap"><table>
+<tr><th>Advanced setting</th><th>Range</th><th>Default</th></tr>
+<tr><td>Mic muted: amber after</td><td>5 to 600 s</td><td>20 s</td></tr>
+<tr><td>Mic muted: red after</td><td>10 to 1800 s (at least 5 s after amber)</td><td>60 s</td></tr>
+<tr><td><strong>Warn when my mic is very quiet</strong></td><td>30 to 1800 s, level -80 to -20 dBFS</td><td>Off. When on: 90 s below -50 dBFS</td></tr>
+<tr><td>Desktop audio silence</td><td>30 to 1800 s</td><td>120 s</td></tr>
+<tr><td>Scene extra time before red</td><td>1 to 60 min</td><td>5 min</td></tr>
+<tr><td>Dropped frames: warn</td><td>0.1 to 10%</td><td>0.5%</td></tr>
+<tr><td>Dropped frames: fail</td><td>0.2 to 50% (at least 0.1 above warn)</td><td>2.0%</td></tr>
+<tr><td><strong>Play a sound on a new red light</strong></td><td>On or off</td><td>Off (system beep)</td></tr>
+<tr><td><strong>Check for Stream Kit updates</strong></td><td>On or off</td><td>On (same switch as in Kit settings)</td></tr>
+</table></div>
+<p>The quiet-mic warning only starts after the mic has been heard once this session. It never fires while the mic is muted or while you are on a holding scene. If you type a number outside a range, the Kit adjusts it and shows a note.</p>
+
+<h3>Where settings are kept</h3>
+<p>All of these are in OBS's <code>plugin_config</code> folder, plus one file in each OBS profile:</p>
+<ul>
+  <li><code>rws-stream-kit\settings.json</code>: Kit settings.</li>
+  <li><code>rws-multistream</code>: upload speed, hotkey bindings and reports. Destinations are in <code>rws-multistream.json</code> inside the OBS profile.</li>
+  <li><code>rws-preflight\settings.json</code>: Pre-Flight settings.</li>
+  <li><code>rws-inflight\settings.json</code>: In-Flight settings, including Levels.</li>
+</ul>
+<p>The older folder names stay the same on purpose, so a Kit 1.0.x upgrade keeps everything.</p>
+</section>
+
+<section id="hotkeys">
+<h2>Hotkeys</h2>
+<p>Multistream adds hotkeys. Set them in OBS under <strong>Settings</strong> &gt; <strong>Hotkeys</strong>. Look for the names that start with "Red Warden Multistream":</p>
+<ul>
+  <li><strong>Red Warden Multistream: turn all destinations on</strong></li>
+  <li><strong>Red Warden Multistream: turn all destinations off</strong></li>
+  <li><strong>Red Warden Multistream: toggle</strong> followed by a destination's name. There is one for each destination.</li>
+</ul>
+<p>A hotkey acts when you press it. Holding it does nothing more. Pre-Flight and In-Flight have no hotkeys.</p>
+<p>If you switch Multistream off in the Kit settings, its hotkeys are gone after the next OBS start.</p>
+</section>
+
+<section id="automation">
+<h2>Automation</h2>
+<h3>Stream Deck</h3>
+<p>You can toggle destinations from a Stream Deck in two ways.</p>
+<ul>
+  <li>Use the Hotkey action in the Stream Deck software and send one of the hotkeys above. Set the same key combination in OBS first.</li>
+  <li>Use Elgato's OBS plugin for Stream Deck, which talks to OBS over obs-websocket. Use it with the vendor requests below if it can send custom requests.</li>
+</ul>
+
+<h3>obs-websocket vendor requests</h3>
+<p>If OBS's obs-websocket is available, Multistream registers a vendor named <code>RedWardenMultistream</code>. Call it with <code>CallVendorRequest</code>. It is for outside tools only. The Kit itself never uses it.</p>
+<div class="tablewrap"><table>
+<tr><th>Request</th><th>Data</th><th>Result</th></tr>
+<tr><td><code>GetDestinations</code></td><td>none</td><td><code>destinations</code>: a list with <code>id</code>, <code>name</code>, <code>platform</code>, <code>enabled</code>, <code>state</code> and <code>kbps</code> for each. Also <code>ok</code>.</td></tr>
+<tr><td><code>SetDestination</code></td><td><code>destination</code> (id or name), <code>enabled</code></td><td>Turns that destination on or off.</td></tr>
+<tr><td><code>ToggleDestination</code></td><td><code>destination</code> (id or name)</td><td>Flips that destination.</td></tr>
+<tr><td><code>SetAllDestinations</code></td><td><code>enabled</code></td><td>Turns every destination on or off.</td></tr>
+</table></div>
+<p>The vendor also sends a <code>DestinationChanged</code> event when a destination changes. Names are matched without regard to case.</p>
+<pre><code>{
+  "vendorName": "RedWardenMultistream",
+  "requestType": "SetDestination",
+  "requestData": { "destination": "YouTube", "enabled": true }
+}</code></pre>
+<p>Errors you may see: <code>requestData.destination (id or name) is required</code> and <code>no destination with that id or name</code>. If OBS does not answer within 3 seconds, the reply says so and the change may still apply.</p>
+</section>
+
+<section id="updates">
+<h2>Updates</h2>
+<p>Once each time OBS starts, about 15 seconds after the dock loads, the Kit asks redwardenstudios.com whether a newer version exists. If one does, a one-line notice appears in the dock with a <strong>Download</strong> link and <strong>Not now</strong>. Either one hides the notice until the next OBS start.</p>
+<p>If the newer version needs a newer OBS than you have, the notice says which OBS version to get first and offers <strong>Details</strong> instead.</p>
+<p>The Kit never downloads or installs anything by itself. To turn the check off, clear <strong>Tell me when an update is available</strong> in the Kit settings, on the <strong>Updates</strong> page.</p>
+</section>
+
+<section id="privacy">
+<h2>Privacy</h2>
+<ul>
+  <li><strong>Update check</strong>: one plain web request to redwardenstudios.com each time OBS starts. It sends no request body; the Kit version is in the User-Agent. Like any web request, it lets the server see ordinary connection details such as your IP address. You can turn it off.</li>
+  <li><strong>Upload speed test</strong>: talks to Cloudflare's speed server, only when you press <strong>Test my upload speed</strong>.</li>
+  <li><strong>Twitch bandwidth test</strong>: talks to Twitch, only when you press <strong>Test bandwidth without going live</strong>.</li>
+  <li><strong>Your streams</strong>: Multistream sends video only to the destinations you add.</li>
+  <li><strong>Stream keys</strong> are stored in Windows Credential Manager. Settings files do not hold them.</li>
+  <li>Pre-Flight and In-Flight make no connections of their own.</li>
+</ul>
+</section>
+
+<section id="troubleshooting">
+<h2>Troubleshooting</h2>
+
+<h3>I do not see the RW Stream Kit dock</h3>
+<ul>
+  <li>Open <strong>Docks</strong> in OBS and look for <strong>RW Stream Kit</strong>. Tick it if it is there but hidden.</li>
+  <li>Check that you run OBS Studio 31.1 or newer, 64-bit.</li>
+  <li>With a zip install, check that the folder is <code>C:\ProgramData\obs-studio\plugins\rws-stream-kit</code> and that no old <code>rws-multistream</code>, <code>rws-preflight</code> or <code>rws-inflight</code> folder is beside it.</li>
+  <li>The dock may be there but tiny. Drag its edge, or float it.</li>
+</ul>
+
+<h3>A tool is missing from the dock</h3>
+<p>It is probably off. Open the gear, then <strong>Tools</strong>, and tick it. Restart OBS. Its settings are still there.</p>
+
+<h3>I cannot switch a tool off</h3>
+<p>You can switch a tool off only after the stream ends. The Kit refuses while you are live or while any Multistream destination is active.</p>
+
+<h3>Reset is greyed out</h3>
+<p>Reset works whenever no stream session is active, including before your first stream. It is off while a session is active. A session ends only after OBS's stream and every Multistream destination have been off the air for 10 seconds.</p>
+
+<h3>The dock did not switch to In-Flight</h3>
+<p>Check that <strong>Switch to In-Flight when I go live</strong> is on and that In-Flight is on. If you clicked a stage in the strip earlier, the dock follows the stream again the next time you go live.</p>
+
+<h3>A light is stuck amber or red</h3>
+<ul>
+  <li>A light clears only after it has been fine for 10 seconds.</li>
+  <li><strong>Scene</strong>: you are on a holding scene past its limit. Change scene or raise the limit in <strong>Holding scenes</strong>.</li>
+  <li><strong>Mic</strong>: unmute it. Amber and red timers start from when it was muted.</li>
+  <li><strong>Net</strong>: click the light. It names the output and the percentage. See <a href="#network">Network light</a>.</li>
+  <li><strong>Stream</strong>: after a drop with an error code the light stays red until you press <strong>Acknowledge</strong>.</li>
+  <li>A light you snoozed with <strong>Snooze 10 min</strong> is only dimmed. The problem is still there.</li>
+</ul>
+
+<h3>A light is a dashed ring</h3>
+<p>The Kit cannot tell yet. The <strong>Net</strong> and <strong>PC</strong> lights need about 30 seconds of video after you go live, and enough frames to judge. On a stalled stream that can take longer. A mic with no meter data for 5 seconds also shows this.</p>
+
+<h3>A destination is not reconnecting</h3>
+<ul>
+  <li>If the card says <strong>Paused</strong> or shows a countdown, the connection budget is in charge. See <a href="#multistream">Reconnects and the connection budget</a>. The Kit protects your platform account from too many connections. Wait for the time on the card.</li>
+  <li>If the card says to check the destination's settings, the platform rejected the key or the URL is bad. Click <strong>Edit</strong>, fix it and save.</li>
+  <li>If you pressed <strong>Stop Streaming</strong> in OBS, pending retries are cancelled on purpose.</li>
+  <li>The Twitch bandwidth test and the <strong>Retry</strong> button also use up attempts.</li>
+</ul>
+
+<h3>A destination stays on Waiting</h3>
+<p>It waits up to 20 seconds for OBS's stream to send video. Check that OBS is actually streaming and that your scene has video.</p>
+
+<h3>The upload test does not run</h3>
+<p>It cannot run while you are live. Stop the stream first, or type your speed with <strong>Enter my upload speed...</strong>.</p>
+
+<h3>The ? button opened the website, not this manual</h3>
+<p>The installer puts the manual in the plugin's data folder (<code>data\manual</code>). If it is missing, <strong>?</strong> opens the online manual. Use the web manual, or reinstall with the latest installer.</p>
+
+<h3>I have two docks, or old docks</h3>
+<p>You still have an older plugin installed. Run the Kit installer again, or remove the old <code>rws-multistream</code>, <code>rws-preflight</code> and <code>rws-inflight</code> folders from the plugins folder, and restart OBS.</p>
+
+<h3>The mic test says my mic is too quiet</h3>
+<p>Move closer, raise the gain, and press <strong>Test mic</strong> again. To pass, your loudest moment must be above -30 dB and well above your room noise.</p>
+</section>
+
+<section id="uninstall">
+<h2>Uninstall</h2>
+<h3>Installed with the installer</h3>
+<ol>
+  <li>Close OBS.</li>
+  <li>Open Windows <strong>Settings</strong> &gt; <strong>Apps</strong>.</li>
+  <li>Find <strong>Red Warden Stream Kit (OBS plugins)</strong> and choose Uninstall.</li>
+</ol>
+<h3>Installed from the zip</h3>
+<p>Close OBS and delete the <code>rws-stream-kit</code> folder from <code>C:\ProgramData\obs-studio\plugins\</code>.</p>
+<p>The Kit's settings files are in OBS's <code>plugin_config</code> folder and your OBS profile. Stream keys are in Windows Credential Manager. To remove a key, press <strong>Remove</strong> on the destination before you uninstall.</p>
+</section>
+
+<section id="about">
+<h2>About</h2>
+<p>Red Warden Stream Kit is free, open-source software, licensed GPL-2.0-or-later. You are free to use it, study it and share it under that license.</p>
+<ul>
+  <li>Version: 1.1.0</li>
+  <li>Source: <a href="https://github.com/Red-Warden-Studios/red-warden-stream-kit">github.com/Red-Warden-Studios/red-warden-stream-kit</a></li>
+  <li>Made by Red Warden Studios. Product page: <a href="https://redwardenstudios.com/division/bastion/stream-kit/">redwardenstudios.com/division/bastion/stream-kit</a></li>
+  <li>Support: <a href="mailto:support@redwardenstudios.com">support@redwardenstudios.com</a></li>
+</ul>
+<p>The "Red Warden" name and logo are trademarks of Red Warden Studios. The GPL does not cover them.</p>
+</section>
+
+</main>
+</div>
+<footer>
+  <div class="wrap">Red Warden Stream Kit 1.1.0 manual. Made by Red Warden Studios.</div>
+</footer>
+</body>
+</html>

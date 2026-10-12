@@ -17,6 +17,8 @@ SPDX-License-Identifier: GPL-2.0-or-later
 #include "update-check.hpp"
 
 #include <QAbstractButton>
+#include <QDialog>
+#include <QMessageBox>
 #include <QPointer>
 #include <QTimer>
 #include <QWidget>
@@ -25,10 +27,12 @@ SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <atomic>
 #include <functional>
+#include <optional>
 #include <thread>
 #include <map>
 #include <set>
 #include <memory>
+#include <vector>
 
 class QLabel;
 class QPushButton;
@@ -51,6 +55,19 @@ public:
 	void onProfileChanged();
 	void shutdown();
 
+	// ---- host (Stream Kit dock) interface ----
+	// One line for the host's section header: "Ready on 2 of 3", "Live on 2 of 2", "Connecting 1 of 2" ...
+	QString summary() const { return summaryText; }
+	// True while any destination's output is starting, live, reconnecting or stopping (the Kit refuses to switch
+	// a tool off then).
+	bool anyOutputActive() const
+	{
+		for (const auto &[id, r] : runners)
+			if (r && r->busy())
+				return true;
+		return false;
+	}
+
 	// ---- external control: hotkeys, obs-websocket, Stream Deck ----------
 	struct DestinationInfo {
 		QString id, name, platform, state;
@@ -58,12 +75,45 @@ public:
 		double kbps = 0.0;
 	};
 	std::vector<DestinationInfo> snapshot();
+	// The same list for Pre-Flight and In-Flight, which run in this process: read on the UI thread (their 1 Hz timers),
+	// copied out, nothing held. std::nullopt = "not available" once this dock is shutting down (the Kit also never
+	// hands the bridge out when Multistream is switched off, so the tools then see "Multistream not found"). This replaces
+	// the obs-websocket GetDestinations round trip they used to make from worker threads; that request stays for external clients.
+	std::optional<std::vector<DestinationInfo>> destinationsNow();
+
+	// ---- in-process view for the Kit's Network light (In-Flight) ----
+	// What In-Flight needs to judge each destination's outgoing stream separately. Read on the UI thread, in the same
+	// process, by In-Flight's 1 Hz tick (the runners and their obs_output pointers are UI-thread objects, see
+	// output-runner.hpp, so there is no lock to take and no ref to hold: the numbers are copied out at once and
+	// nothing keeps a pointer). Not for any other thread.
+	struct OutputSnapshot {
+		enum class State { Off, Live, Reconnecting, Other };
+		QString id, name;
+		State state = State::Off;
+		uint64_t dropped = 0; // obs_output_get_frames_dropped of the current output (0 when there is none)
+		uint64_t total = 0;   // obs_output_get_total_frames of the same output
+		uint64_t serial = 0;  // OutputRunner::outputSerial(): changes when the output is replaced or restarted
+	};
+	std::vector<OutputSnapshot> outputSnapshots();
+	// The Network light's verdict per destination: the 30 s drop percentage of each destination it currently judges
+	// bad (amber or red because of dropped frames). Those rows get a small "x.x% DROPPED" badge next to LIVE. The
+	// full set every time: a destination not in the map has no badge.
+	void setDropFigures(const std::map<QString, double> &pctById);
+	// Test hook: one log line with the geometry numbers of the destination list (see FitScrollArea::diagnose).
+	void testLogListGeometry(const char *tag);
+	// The destination's own switch (the row's toggle, a hotkey and obs-websocket all end up here): off stops
+	// that output only and keeps the setting; on starts it at once when OBS is streaming (through the connection budget).
+	void setOn(const QString &id, bool on);
 	// mode: 0 = off, 1 = on, 2 = toggle. Matches an id, or a name (case-
 	// insensitive). Returns false if nothing matched.
 	bool setEnabledByKey(const QString &idOrName, int mode, DestinationInfo *out = nullptr);
 	void setAll(bool on);
 	// Told about every state change; obs-websocket turns these into events.
 	std::function<void(const DestinationInfo &)> stateListener;
+
+signals:
+	// The summary line changed (emitted from refreshSummary).
+	void summaryChanged(const QString &summary);
 
 protected:
 	void changeEvent(QEvent *e) override;
@@ -81,12 +131,9 @@ private:
 	void refreshAll();
 	void refreshSummary();
 
-	// Update notice: one line at the top of the dock, only when a newer version
-	// is published. See update-check.hpp.
-	UpdateChecker updates;
-	QLabel *updateNote = nullptr;
-	updatecheck::Manifest pendingUpdate;
-	void showUpdate(const updatecheck::Manifest &m);
+	// (The update notice and its scheduler live in the Kit dock now: one scheduler, independent of which
+	// tools are switched on.)
+	QString summaryText;
 
 	Destination *find(const QString &id);
 	OutputRunner *runner(const QString &id);
@@ -97,7 +144,6 @@ private:
 	void cancelRetry(const QString &id);
 	void onRunnerChanged(const QString &id);
 
-	void setOn(const QString &id, bool on);
 	DestinationInfo info(const Destination &d);
 	void notify(const QString &id);
 
@@ -169,6 +215,16 @@ private:
 	qint64 mainLastMs = 0;
 	double mainKbps = 0.0;
 	bool closing = false;
+	// Every modal dialog this dock has open, outermost first (an edit dialog, and a message box opened over it by
+	// a handler that runs while it is up, can both be open). shutdown() rejects them innermost first; nothing
+	// else's dialogs are touched. The Kit dock relies on this: it no longer walks the application's modal stack.
+	std::vector<QPointer<QDialog>> modals_;
+	int execModal(QDialog *dlg);
+	// A message box as a heap, tracked modal (a static QMessageBox::question/warning/information would be an
+	// untracked exec loop that a shutdown could not end). Returns the clicked standard button, or NoButton when it
+	// was closed without one (also when shutdown ended it).
+	QMessageBox::StandardButton messageBox(QMessageBox::Icon icon, const QString &title, const QString &text,
+					       QMessageBox::StandardButtons buttons = QMessageBox::Ok);
 	ObsStreamAudio obsAudio;
 
 	// The connection budget itself is connectionBudget(id) (connection-budget.hpp),
@@ -185,6 +241,7 @@ private:
 		int dropAttempts = 0; // quick reconnects made since the drop
 	};
 	std::map<QString, RetryState> retries;
+	std::map<QString, double> dropFigures_; // see setDropFigures
 
 	std::map<obs_hotkey_id, QString> hotkeyDest; // toggle hotkey -> destination
 	obs_hotkey_id allOnHotkey = OBS_INVALID_HOTKEY_ID;

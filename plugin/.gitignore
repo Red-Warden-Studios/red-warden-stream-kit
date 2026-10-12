@@ -1,0 +1,27 @@
+# Exclude everything
+/*
+
+# Except for project files
+!/build-aux
+!/cmake
+!/data
+!/src
+!/tests
+!/tools
+!/installer
+!/brand
+!/docs
+!.clang-format
+!.gersemirc
+!.gitignore
+!buildspec.json
+!CMakeLists.txt
+!CMakePresets.json
+!LICENSE
+!README.md
+!NOTICE.txt
+
+*.lock.json
+.DS_Store
+/cmake/.CMakeBuildNumber
+/.testbed

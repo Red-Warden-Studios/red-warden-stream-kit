@@ -124,8 +124,9 @@ EditDialog::EditDialog(const Destination &d, bool isNew, bool hasSavedKey, QWidg
 		QString key = newKey();
 		if (key.isEmpty())
 			key = creds::loadKey(base.id);
-		BandwidthDialog dlg(destination(), key, this);
-		dlg.exec();
+		QPointer<BandwidthDialog> dlg(new BandwidthDialog(destination(), key, this));
+		execNested(dlg);
+		delete dlg.data();
 	});
 	auto *bwRow = new QHBoxLayout();
 	bwRow->addWidget(bandwidthButton);
@@ -237,10 +238,14 @@ EditDialog::EditDialog(const Destination &d, bool isNew, bool hasSavedKey, QWidg
 	if (!isNew) {
 		auto *remove = buttons->addButton(QStringLiteral("Remove"), QDialogButtonBox::DestructiveRole);
 		connect(remove, &QPushButton::clicked, this, [this] {
-			const auto answer = QMessageBox::question(
-				this, QStringLiteral("Remove destination"),
-				QStringLiteral("Remove \"%1\" and delete its saved stream key?").arg(nameEdit->text()));
-			if (answer == QMessageBox::Yes) {
+			QPointer<QMessageBox> box(new QMessageBox(
+				QMessageBox::Question, QStringLiteral("Remove destination"),
+				QStringLiteral("Remove \"%1\" and delete its saved stream key?").arg(nameEdit->text()),
+				QMessageBox::Yes | QMessageBox::No, this));
+			const int rc = execNested(box);
+			const bool yes = rc >= 0 && box && box->standardButton(box->clickedButton()) == QMessageBox::Yes;
+			delete box.data();
+			if (yes) {
 				removeFlag = true;
 				accept();
 			}
@@ -366,6 +371,26 @@ void EditDialog::validate()
 	bandwidthButton->setVisible(twitch);
 	bandwidthButton->setEnabled(twitch && err.isEmpty() &&
 				    (!keyEdit->text().trimmed().isEmpty() || creds::hasKey(base.id)));
+}
+
+void EditDialog::reject()
+{
+	if (nested_)
+		nested_->reject(); // the dialog on top of this one ends first (OBS exit, or the user closing this one)
+	QDialog::reject();
+}
+
+int EditDialog::execNested(QDialog *dlg)
+{
+	if (!dlg)
+		return -1;
+	QPointer<QDialog> me(dlg);
+	nested_ = me;
+	dlg->exec();
+	if (!me)
+		return -1; // destroyed under us
+	nested_.clear();
+	return dlg->result();
 }
 
 Destination EditDialog::destination() const

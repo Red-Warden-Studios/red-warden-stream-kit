@@ -3,7 +3,7 @@
 
   Builds nothing and touches none of your real OBS settings. It:
     1. makes a portable copy of OBS in .testbed\obs (first run only),
-    2. installs the freshly built rws-multistream.dll into that copy,
+    2. installs the freshly built rws-stream-kit.dll (the ONE Kit DLL; old standalone dlls removed) into that copy,
     3. starts three local RTMP receivers (ffmpeg) on 127.0.0.1,
     4. launches the portable OBS with a throwaway profile whose main stream
        goes to receiver 0, plus two the plugin destinations:
@@ -12,7 +12,7 @@
     5. streams for ~20 s, closes OBS cleanly, and checks each receiver got
        real video + audio (ffprobe) and that the OBS log shows the plugin going live.
 
-  Run from the red-warden-multistream folder:  powershell -ExecutionPolicy Bypass -File tools\test-local.ps1
+  Run from the Multistream folder:  powershell -ExecutionPolicy Bypass -File tools\test-local.ps1
 #>
 param(
   [string]$Config = "RelWithDebInfo",
@@ -20,32 +20,31 @@ param(
 )
 $ErrorActionPreference = "Stop"
 $root   = Split-Path -Parent $PSScriptRoot
-$bed    = Join-Path $root ".testbed"
-$obs    = Join-Path $bed "obs"
+$kitTools = Join-Path (Split-Path -Parent $root) "plugin\tools"                                          # published layout: <repo>\plugin
+if (!(Test-Path $kitTools)) { $kitTools = Join-Path (Split-Path -Parent $root) "red-warden-stream-kit\plugin\tools" }   # development layout
+. (Join-Path $kitTools "kit-testbed.ps1")
+$kit    = Get-KitTestbed $Config
+$bed    = $kit.Bed
+$obs    = $kit.Obs
 $cfg    = Join-Path $obs "config\obs-studio"
 $prof   = Join-Path $cfg "basic\profiles\MultistreamTest"
-$dll    = Join-Path $root "build_x64\$Config\rws-multistream.dll"
+$dll    = $kit.Dll
 $ports  = 19350, 19351, 19352
 $ids    = "00000000-beac-0000-0000-000000000001", "00000000-beac-0000-0000-000000000002"
 
 if (!(Test-Path $dll)) { throw "Build first: $dll not found" }
 
-# 1. portable OBS
-if (!(Test-Path (Join-Path $obs "bin\64bit\obs64.exe"))) {
-  Write-Host "Copying OBS into the testbed (one time)..."
-  robocopy "C:\Program Files\obs-studio" $obs /E /NFL /NDL /NJH /NJS /NP | Out-Null
-  New-Item -ItemType File -Force (Join-Path $obs "portable_mode.txt") | Out-Null
-}
+# 1. portable OBS (first run: copied from the Multistream testbed copy, else from C:\Program Files read-only)
+Initialize-KitPortableObs $obs
+# The previous harness's OBS may still be shutting down: wait for it, never kill it.
+if (!(Wait-KitObsExit (Join-Path $obs "bin\64bit\obs64.exe") 30)) { throw "a testbed obs64.exe ($obs) is still running; not touching it" }
 
-# 2. install plugin
-$pbin = Join-Path $obs "obs-plugins\64bit"
-$pdat = Join-Path $obs "data\obs-plugins\rws-multistream\locale"
-New-Item -ItemType Directory -Force $pdat | Out-Null
-Copy-Item $dll $pbin -Force
-Copy-Item (Join-Path $root "data\locale\en-US.ini") $pdat -Force
+# 2. install exactly ONE plugin DLL: rws-stream-kit.dll (+pdb) and its locale. The old standalone
+#    rws-multistream / rws-preflight / rws-inflight dlls and data folders are removed from the copy first.
+Install-KitPlugin $kit | ForEach-Object { Write-Host $_ }
 
 # fresh throwaway config every run
-if (Test-Path $cfg) { Remove-Item -Recurse -Force $cfg }
+Clear-KitConfig $cfg
 New-Item -ItemType Directory -Force $prof | Out-Null
 New-Item -ItemType Directory -Force (Join-Path $cfg "basic\scenes") | Out-Null
 
@@ -183,10 +182,7 @@ function Invoke-ObsRequest([string]$Type, [string]$DataJson = "{}", [int]$Port =
 }
 
 # 5. run OBS
-$exeDir = Join-Path $obs "bin\64bit"
-$proc = Start-Process (Join-Path $exeDir "obs64.exe") -WorkingDirectory $exeDir -PassThru -ArgumentList @(
-  "--portable", "--multi", "--profile", "MultistreamTest", "--collection", "MultistreamTest",
-  "--startstreaming", "--disable-updater", "--disable-missing-files-check")
+$proc = Start-KitObs $obs "MultistreamTest" "MultistreamTest" @("--startstreaming")   # hidden, no focus steal
 Start-Sleep -Seconds $Seconds
 
 # Remote control, the way Streamer.bot / Touch Portal / a Stream Deck plugin
@@ -211,8 +207,7 @@ Start-Sleep -Seconds 5
 Write-Host "Pressing Stop Streaming via obs-websocket..."
 try { Invoke-ObsWs @("StopStream") | Out-Null } catch { Write-Warning "websocket: $_" }
 Start-Sleep -Seconds 5
-[void]$proc.CloseMainWindow()
-if (!$proc.WaitForExit(20000)) { Write-Warning "OBS did not exit cleanly; killing"; $proc.Kill() }
+[void](Close-KitObs $proc)   # hidden OBS: WM_CLOSE to its window (CloseMainWindow needs a visible one)
 Start-Sleep -Seconds 2
 $sinks | ForEach-Object { if (!$_.HasExited) { $_.Kill() } }
 
@@ -221,7 +216,7 @@ foreach ($id in $ids) { [void][RWS.Cred]::CredDeleteW("RedWardenStudios/Multistr
 # 6. verdict
 $log = Get-ChildItem (Join-Path $cfg "logs") | Sort-Object LastWriteTime -Descending | Select-Object -First 1
 Write-Host "`n--- OBS log (the plugin lines) ---"
-Select-String -Path $log.FullName -Pattern "rws-multistream|\[Shared test\]|\[Own 720p test\]|crash|error" | ForEach-Object { $_.Line }
+Select-String -Path $log.FullName -Pattern "rws-multistream|rws-stream-kit|Stream Kit|\[Shared test\]|\[Own 720p test\]|crash|error" | ForEach-Object { $_.Line }
 Write-Host "`n--- receivers ---"
 $fail = $false
 foreach ($p in $ports) {
@@ -257,6 +252,8 @@ foreach ($p in $ports[1..2]) {
 }
 
 $text = Get-Content $log.FullName -Raw
+Write-Host "`n--- Kit load checks (one DLL, one module, one vendor, one dock) ---"
+if (!(Write-KitChecks (Test-KitLoadLog $text $cfg))) { $fail = $true }
 # "Match OBS" audio must resolve to the profile's 256 kbps, not a lower default.
 $m = [regex]::Match($text, "\[Own 720p test\] audio: (\S+), (\d+) kbps, track (\d+)")
 if ($m.Success) {
@@ -277,6 +274,7 @@ Write-Host "Hotkeys registered: $($ours -join ', ')"
 foreach ($want in "rws_multistream.all_on", "rws_multistream.all_off", $hkName) {
   if ($ours -notcontains $want) { Write-Host "missing hotkey $want"; $fail = $true }
 }
+if (!(Write-KitChecks (Test-KitHotkeysOnce $hkList @("rws_multistream.all_on", "rws_multistream.all_off", "rws_multistream.toggle.$($ids[0])", $hkName)))) { $fail = $true }
 $pressOk = ($press | ConvertFrom-Json).d.requestStatus.result
 $liveCount = ([regex]::Matches($text, [regex]::Escape("[Own 720p test] live"))).Count
 Write-Host "Toggle hotkey pressed: request ok=$pressOk; Own 720p test went live $liveCount time(s)"
